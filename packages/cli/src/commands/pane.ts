@@ -607,8 +607,11 @@ async function handlePaneCapture(args: string[]): Promise<void> {
 const RUN_SUGGESTED = 'kelpi pane run-suggested';
 
 /** The pane's `pane-list` entry, read fresh so the idle check sees the state at that moment. */
-async function listedPane(paneID: string, workspaceID: string): Promise<SourcePane & { working_directory?: string | undefined }> {
-    const reply = await decodeReply({ command: 'pane-list', workspace: workspaceID }, RUN_SUGGESTED);
+async function listedPane(paneID: string, workspaceID: string | undefined): Promise<SourcePane & { working_directory?: string | undefined }> {
+    // Pane ids are global, so without the workspace id every workspace is listed instead.
+    const payload: JsonObject = { command: 'pane-list' };
+    if (workspaceID) payload['workspace'] = workspaceID;
+    const reply = await decodeReply(payload, RUN_SUGGESTED);
     const entry = replyArray(reply, 'panes').find((pane) => asString(pane['id']) === paneID);
     if (entry === undefined) {
         errLine(`${RUN_SUGGESTED}: pane ${paneID} is gone`);
@@ -665,7 +668,7 @@ async function handlePaneRunSuggested(args: string[]): Promise<void> {
     if (printOnly) return;
 
     const paneID = asString(captured['pane_id']) ?? '?';
-    const workspaceID = asString(captured['workspace_id']) ?? '';
+    const workspaceID = asString(captured['workspace_id']);
     const source = await listedPane(paneID, workspaceID);
     const inSession = runsInSession(found, source, text);
     const where = inSession ? `in this Claude session as "! ${found.command}"` : 'in a new shell pane';

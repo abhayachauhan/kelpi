@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
     capture: '',
     statuses: [] as string[],
     screens: [] as string[],
+    workspace: 'W' as string | undefined,
     answer: true
 }));
 vi.mock('../reply.js', async (original) => ({
@@ -18,10 +19,11 @@ vi.mock('../reply.js', async (original) => ({
                 return Promise.resolve({
                     ok: true,
                     pane_id: payload['target'] ?? SOURCE,
-                    workspace_id: 'W',
+                    workspace_id: state.workspace,
                     text: payload['scrollback'] === true ? state.capture : (state.screens.shift() ?? state.capture)
                 });
             case 'pane-list':
+                if (payload['workspace'] === '') return Promise.resolve({ ok: false, error: 'workspace not found: ' });
                 return Promise.resolve({
                     ok: true,
                     panes: [{ id: SOURCE, agent: 'claude', agent_session_id: 'S', status: state.statuses.shift() ?? 'idle', working_directory: '/repo' }]
@@ -58,6 +60,7 @@ describe('kelpi pane run-suggested', () => {
         state.sent.length = 0;
         state.statuses.length = 0;
         state.screens.length = 0;
+        state.workspace = 'W';
         state.answer = true;
         resetIO();
     });
@@ -76,6 +79,25 @@ describe('kelpi pane run-suggested', () => {
         await run();
         expect(state.sent).toContainEqual({ command: 'pane-split', target: SOURCE, focus: true, path: '/repo' });
         expect(sends()).toEqual([{ command: 'pane-send', target: 'NEW', text: 'echo one\necho two', bare: false }]);
+    });
+
+    it('runs a ! command continued with \\ in a new shell pane, whether it spans lines or not', async () => {
+        state.capture = ['  ! docker run \\', '    --rm alpine', '', RULE, '> ', RULE].join('\n');
+        await run();
+        expect(sends()).toEqual([{ command: 'pane-send', target: 'NEW', text: 'docker run \\\n  --rm alpine', bare: false }]);
+
+        state.sent.length = 0;
+        state.capture = ['  ! docker run \\', '', RULE, '> ', RULE].join('\n');
+        await run();
+        expect(sends()).toEqual([{ command: 'pane-send', target: 'NEW', text: 'docker run \\', bare: false }]);
+    });
+
+    it('looks the pane up in every workspace when the capture names none', async () => {
+        state.capture = BANG;
+        state.workspace = undefined;
+        await run();
+        expect(state.sent).toContainEqual({ command: 'pane-list' });
+        expect(sends()).toEqual([expect.objectContaining({ target: SOURCE })]);
     });
 
     it('runs a ! command in a new pane when Claude is busy', async () => {
