@@ -102,6 +102,8 @@ describe('neverAutoApprove', () => {
         ['echo cm0gLXJmIH4= | base64 -d | sh', 'piped or heredoc into a shell or interpreter'],
         ["printf 'echo hi' | bash",'piped or heredoc into a shell or interpreter'],
         ["python3 <<'EOF'\nimport os\nEOF", 'piped or heredoc into a shell or interpreter'],
+        ['cat x.b64 | base64 -d | env sh', 'piped or heredoc into a shell or interpreter'],
+        ['node /dev/stdin < payload', 'piped or heredoc into a shell or interpreter'],
         ['kelpi auto-approve on 600', 'auto-approve itself'],
         [`kelpi auto-"a"pp\\rove on`, 'auto-approve itself'],
         [`echo '{"command":"auto-approve","action":"on"}' | nc -U /tmp/kelpi.sock`, 'auto-approve itself']
