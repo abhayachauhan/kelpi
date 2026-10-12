@@ -152,6 +152,13 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
     { name: 'sudo', test: (t) => t.some((x) => base(x) === 'sudo') },
     { name: 'download piped into a shell', test: (t, all) => /\b(?:curl|wget)\b/.test(all) && t.some((x) => SHELLS.has(base(x))) },
     { name: 'download piped into an interpreter', test: (t, all) => /\b(?:curl|wget)\b/.test(all) && t.some((x) => INTERPRETERS.test(base(x))) },
+    // `python -c '…'` hides its command from every rule below; so does `bash -c` with quotes in the way.
+    {
+        name: 'shell or interpreter running inline code',
+        test: (t) => t.some((x, i) => (SHELLS.has(base(x)) || INTERPRETERS.test(base(x))) && ['-c', '-e', '--eval'].includes(t[i + 1] ?? ''))
+    },
+    // Auto-approve must not be able to extend or restart itself.
+    { name: 'kelpi auto-approve', test: (t) => ['kelpi', 'kelpi.js', 'nex'].some((tool) => sub(t, tool, ['auto-approve'])) },
     { name: 'mkfs', test: (t) => t.some((x) => /^mkfs(?:\.|$)/.test(base(x))) },
     { name: 'dd of=', test: (t) => after(t, 'dd')?.some((f) => f.startsWith('of=')) ?? false },
     {

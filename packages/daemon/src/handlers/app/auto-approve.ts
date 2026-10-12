@@ -66,11 +66,11 @@ export interface AutoApproverDeps {
     readonly schedule?: ((run: () => void, ms: number) => void) | undefined;
 }
 
-/** A shell pane Claude has run in. A pane Claude has left still passes; the live prompt read is the guard. */
+/** A shell pane with a live Claude session: SessionEnd clears the id, so a pane Claude has left does not pass. */
 export function isClaudePane(ctx: AppContext, paneID: string): boolean {
     const pane = findPaneAnywhere(ctx.store.getState(), paneID)?.pane;
     if (pane === undefined || pane.type !== 'shell') return false;
-    return pane.agentKind === 'claude' || (pane.agentKind === null && pane.agentSessionID !== null);
+    return pane.agentSessionID !== null && pane.agentKind !== 'codex';
 }
 
 async function readScreen(ctx: AppContext, paneID: string): Promise<string | null> {

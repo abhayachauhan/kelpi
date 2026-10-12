@@ -2359,11 +2359,14 @@ How it decides (`packages/daemon/src/handlers/app/auto-approve.ts`):
 - **When:** on Claude's `Notification` hook (`kelpi event notification`, agent-lifecycle.md
   §5.3), which fires as a permission prompt opens. No polling. When the pane shows no prompt
   yet, it reads again after 0.25, 1 and 3 seconds.
-- **Which panes:** shell panes whose agent is Claude (`agentKind`, or a session id).
+- **Which panes:** shell panes with a live Claude session (a session id, which `SessionEnd`
+  clears), so a pane Claude has left is never answered.
 - **What:** only a prompt in the exact shape Claude draws, at the bottom of the screen, with the
   cursor on `1. Yes` (`@kelpi/core/agent` `parsePermissionPrompt`). Anything else is left.
 - **Never:** a command on the never-auto-approve list is left for the user, however it is
-  quoted: `rm -r`, `git push`, `sudo`, a download piped into a shell or interpreter, `mkfs`,
+  quoted: `rm -r`, `git push`, `sudo`, a download piped into a shell or interpreter, a shell
+  or interpreter running inline code (`bash -c`, `python -c`, `node -e`), `kelpi
+  auto-approve` itself (so it cannot extend itself), `mkfs`,
   `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`, `rsync
   --delete`, `gh pr merge`, `npm publish`, `kubectl` writes, `terraform apply`, `helm install`,
   `aws` writes, a variable as the command word, `alias` and `eval` (`NEVER_AUTO_APPROVE`).

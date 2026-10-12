@@ -15,7 +15,7 @@ function rig(options: { readonly agent?: 'claude' | 'codex' | null } = {}) {
     let clock = NOW;
     const h = harness({ initial: seeded(2), now: () => clock });
     if (options.agent !== null) {
-        for (const pane of [P1, P2]) h.send({ command: 'start', pane_id: pane, agent: options.agent ?? 'claude' });
+        for (const pane of [P1, P2]) h.send({ command: 'session-start', pane_id: pane, session_id: `s-${pane}`, agent: options.agent ?? 'claude' });
     }
     const screens = new Map<string, string[]>();
     const keys: string[] = [];
@@ -114,11 +114,16 @@ describe('createAutoApprover', () => {
         expect(r.keys).toEqual([`${P1}:enter`]);
     });
 
-    it('skips panes Claude has not run in', async () => {
+    it('skips panes without a live Claude session', async () => {
         const plain = rig({ agent: null });
         plain.approver.turnOn(10, plain.ctx);
         plain.show(P1, prompt('git status'));
         expect(await plain.approver.check(P1, plain.ctx)).toBe('not-claude');
+        const ended = rig();
+        await ended.on(10);
+        ended.h.send({ command: 'session-end', pane_id: P1, session_id: `s-${P1}` });
+        ended.show(P1, prompt('git status'));
+        expect(await ended.approver.check(P1, ended.ctx)).toBe('not-claude');
         const codex = rig({ agent: 'codex' });
         codex.approver.turnOn(10, codex.ctx);
         codex.show(P1, prompt('git status'));
@@ -160,7 +165,7 @@ describe('auto-approve command', () => {
 
     it('is fed by the notification hook, even while turning on is still reading the pane', async () => {
         const h = harness({ initial: seeded(1) });
-        h.send({ command: 'start', pane_id: P1, agent: 'claude' });
+        h.send({ command: 'session-start', pane_id: P1, session_id: 's-1', agent: 'claude' });
         let screen = '$ ';
         const keys: string[] = [];
         const ctx: AppContext = {
