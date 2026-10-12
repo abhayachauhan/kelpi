@@ -571,13 +571,15 @@ Run \`kelpi group <subcommand> --help\` for subcommand-specific usage.
 export const groupCreateUsage = `Usage:
   kelpi group create <name> [--color <color>]
 
-Creates a new, empty workspace group.
+Creates a new, empty workspace group. Use -- before a name that starts
+with a dash.
 
 Options:
   --color <color>  Group color, e.g. blue.
   -h, --help       Show this help.
 
-Exit codes: 0 on success, non-zero on failure.
+Exit codes: 1 on a usage error, otherwise 0, even when Kelpi is not
+running (a warning). Check with kelpi group list.
 
 `;
 
@@ -589,34 +591,26 @@ Renames a group. Use -- before a name that starts with a dash.
 Options:
   -h, --help       Show this help.
 
-Exit codes: 0 on success, non-zero on failure.
+Exit codes: 1 on a usage error, otherwise 0, even when no group matches
+<name-or-id> or Kelpi is not running (a warning). Check with
+kelpi group list.
 
 `;
 
 export const groupDeleteUsage = `Usage:
   kelpi group delete <name-or-id> [--cascade]
 
-Deletes a group. Its children promote unless --cascade is given.
-Use -- before a name that starts with a dash: kelpi group delete -- --help
+Deletes a group. Its workspaces move to the top level, unless --cascade
+deletes them too. Use -- before a name that starts with a dash:
+kelpi group delete -- --help
 
 Options:
-  --cascade        Delete the group's children along with it.
+  --cascade        Also delete the group's workspaces, closing their panes.
   -h, --help       Show this help.
 
-Exit codes: 0 on success, non-zero on failure.
-
-`;
-
-export const layoutSelectUsage = `Usage:
-  kelpi layout select <name>
-
-Applies a layout to the calling pane's workspace.
-Valid layouts: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled
-
-Options:
-  -h, --help       Show this help.
-
-Exit codes: 0 on success, non-zero on failure.
+Exit codes: 1 on a usage error, otherwise 0, even when no group matches
+<name-or-id> or Kelpi is not running (a warning). Check with
+kelpi group list.
 
 `;
 
@@ -682,6 +676,44 @@ Options:
   -h, --help       Show this help.
 
 Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const layoutUsage = `Usage:
+  kelpi layout cycle|select [...]
+
+Subcommands:
+  cycle     Switch the calling pane's workspace to the next layout.
+  select    Apply a named layout to the calling pane's workspace.
+
+Run \`kelpi layout <subcommand> --help\` for subcommand-specific usage.
+
+`;
+
+export const layoutCycleUsage = `Usage:
+  kelpi layout cycle
+
+Switches the calling pane's workspace to the next layout, in the order
+even-horizontal, even-vertical, main-horizontal, main-vertical, tiled.
+
+Options:
+  -h, --help       Show this help.
+
+Exit codes: 0, even outside a Kelpi pane, where it does nothing.
+
+`;
+
+export const layoutSelectUsage = `Usage:
+  kelpi layout select <name>
+
+Applies a layout to the calling pane's workspace.
+Valid layouts: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled
+
+Options:
+  -h, --help       Show this help.
+
+Exit codes: 0, even for a name that is not a layout (nothing changes) and
+outside a Kelpi pane (nothing happens); 1 when <name> is missing in a pane.
 
 `;
 

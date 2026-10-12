@@ -193,8 +193,5 @@ describe('help tokens', () => {
         expect(isHelpToken('--halp')).toBe(false);
         expect(hasHelpFlag(['--target', 'x', '--help'])).toBe(true);
         expect(hasHelpFlag(['--target', 'x'])).toBe(false);
-        // After `--` it is a name, not a flag.
-        expect(hasHelpFlag(['--', '--help'])).toBe(false);
-        expect(hasHelpFlag(['-h', '--', 'x'])).toBe(true);
     });
 });

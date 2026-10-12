@@ -10,7 +10,8 @@
  *     `--name --json` sets the name to the literal `--json`;
  *   - a flag in FINAL position has no value: it returns null and is LEFT in argv, where the
  *     leftover check rejects it as an unknown option;
- *   - `--` tails exist only for `web click|type|select`;
+ *   - `--` tails exist only for `web click|type|select` and `group create|rename|delete`, where
+ *     every word after it is a name, so `kelpi group delete -- --help` can name a group `--help`;
  *   - `rejectLeftoverArgs` is what makes `kelpi pane capture <uuid>` fail loudly instead of
  *     silently capturing the caller (issue #237).
  *
@@ -106,17 +107,9 @@ export function isHelpToken(token: string): boolean {
     return token === '-h' || token === '--help' || token === 'help';
 }
 
-/** `--help` / `-h` ANYWHERE in argv before a `--` — the form `pane`/`workspace` subcommands use. */
+/** `--help` / `-h` ANYWHERE in argv — the form `pane`/`workspace` subcommands use. */
 export function hasHelpFlag(args: readonly string[]): boolean {
-    const end = args.indexOf('--');
-    const flags = end === -1 ? args : args.slice(0, end);
-    return flags.includes('--help') || flags.includes('-h');
-}
-
-/** Remove the first `--`, so `kelpi group delete -- --help` names a group called `--help`. */
-export function dropEndOfFlags(args: string[]): void {
-    const end = args.indexOf('--');
-    if (end !== -1) args.splice(end, 1);
+    return args.includes('--help') || args.includes('-h');
 }
 
 /**

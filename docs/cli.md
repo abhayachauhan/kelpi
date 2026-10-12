@@ -153,7 +153,8 @@ Commands whose implicit subject is the caller pane call `requirePaneID()`:
 
 Commands that use `requirePaneID()` (silent exit 0 outside a pane): `event *` (all),
 `pane close` (no `--target` form), `pane move` (directional form), `pane move-to-workspace`,
-`pane list --current`, `pane capture` (no `--target` form), `layout cycle`, `layout select`.
+`pane list --current`, `pane capture` (no `--target` form), `layout cycle`, `layout select`
+(but not their `--help`, which prints outside a pane too, §12).
 
 Commands that instead print a usage error and exit 1 when neither `KELPI_PANE_ID` nor an
 explicit target/workspace is available: `pane split`, `pane create`, `pane name`,
@@ -410,14 +411,16 @@ most `web` verbs, `md`/`open` after the first positional).
 - `-h` / `--help` accepted by: all `pane` subcommands with usage printers (split, create,
   close, name, resize, send, move, capture, list), `pane sync` (also bare `help`),
   `workspace` (group-level and per subcommand), `group` (group-level, plus
-  `create`/`rename`/`delete`/`reorder`/`sort`), `layout select` (also outside a pane), `web` (group-level, also `help`), `web cookies`, `md`, `open`,
-  `graft`, `install-hooks`. Help goes to **stdout**, exit 0. (Exception: `graft` help goes to stderr and
-  exits 0; the top-level `kelpi --help` usage goes to stderr and exits 0.)
-- A `--` ends the flags for `group create/rename/delete`, so `kelpi group delete -- --help`
-  names a group called `--help`.
-- `event`, `layout cycle`, `diff`, `pane move-to-workspace`,
-  `pane send-key`, `pane id` have no dedicated help flag handling; a `--help` there is
-  either an invalid value error or silently ignored per that command's parsing.
+  `create`/`rename`/`delete`/`reorder`/`sort`/`set-repo`), `layout` (group-level, also
+  `help`, plus `cycle`/`select`, all of them outside a pane too), `web` (group-level, also
+  `help`), `web cookies`, `md`, `open`, `graft`, `install-hooks`. Help goes to **stdout**,
+  exit 0. (Exception: `graft` help goes to stderr and exits 0; the top-level `kelpi --help`
+  usage goes to stderr and exits 0.)
+- For `group create/rename/delete`, every word after a `--` is a name, even one that looks
+  like a flag, so `kelpi group delete -- --help` deletes a group called `--help` (§11.2).
+- `event`, `diff`, `pane move-to-workspace`, `pane send-key`, `pane id` have no dedicated
+  help flag handling; a `--help` there is either an invalid value error or silently ignored
+  per that command's parsing.
 
 ---
 
@@ -1260,16 +1263,23 @@ kelpi group list [--json] [--no-header]
 Fire-and-forget `{"command":"group-create","name":..., color?}`. Missing name => usage,
 exit 1.
 
+`create`, `rename` and `delete` share their argument rules:
+- `-h` / `--help` anywhere before a `--` => help to stdout, exit 0, nothing sent.
+- Flags (`--color`, `--cascade`) are read first, from the words before any `--`, so they may
+  come before or after the names.
+- The names are the words left over, then every word after the `--`, which is a name even
+  when it looks like a flag: `kelpi group delete -- --help` deletes a group called `--help`.
+
 ### 11.3 `kelpi group rename <name-or-id> <new-name>`
 
 Fire-and-forget `{"command":"group-rename","name":...,"new_name":...}`. Missing either
-positional => usage, exit 1.
+positional => usage, exit 1. Argument rules as §11.2.
 
 ### 11.4 `kelpi group delete <name-or-id> [--cascade]`
 
 Fire-and-forget `{"command":"group-delete","name":...,"cascade":<bool>}` (`cascade` a
 native JSON boolean, always present). Without cascade the server promotes children to top
-level.
+level. Argument rules as §11.2.
 
 ### 11.5 `kelpi group reorder` (issue #225)
 
@@ -1341,8 +1351,11 @@ kelpi layout select <name>
 ```
 
 - Missing action => `Usage: kelpi layout cycle|select <name>`, exit 1.
-- `requirePaneID()` before dispatch (silent exit 0 outside a pane) — note this happens
-  even before validating the action.
+- `kelpi layout -h|--help|help`, and `-h` / `--help` anywhere after `cycle` or `select` =>
+  help to stdout, exit 0, nothing sent. Help is checked before `requirePaneID()`, so it
+  prints outside a pane too.
+- Otherwise `requirePaneID()` runs before dispatch (silent exit 0 outside a pane), even
+  before the action is validated.
 - `cycle`: fire-and-forget `{"command":"layout-cycle","pane_id":...}`.
 - `select`: missing name => usage +
   `Valid layouts: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled`,

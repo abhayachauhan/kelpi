@@ -3,14 +3,15 @@
  *
  * Note the order: `requirePaneID()` runs BEFORE the action is validated, so
  * `kelpi layout nonsense` outside a Kelpi pane exits 0 silently rather than reporting the typo.
- * That is the shipped behavior and it is kept.
+ * That is the shipped behavior and it is kept. Help is the one exception: it needs no pane, so
+ * `--help` / `-h` prints anywhere, and never cycles or selects.
  */
 
-import { hasHelpFlag } from '../args.js';
+import { hasHelpFlag, isHelpToken } from '../args.js';
 import { errLine, exit, writeOut } from '../io.js';
 import { requirePaneID } from '../env.js';
 import { sendJSON } from '../transport.js';
-import { layoutSelectUsage } from '../usage.js';
+import { layoutCycleUsage, layoutSelectUsage, layoutUsage } from '../usage.js';
 
 export async function handleLayout(args: string[]): Promise<void> {
     const action = args.shift();
@@ -19,6 +20,14 @@ export async function handleLayout(args: string[]): Promise<void> {
         exit(1);
     }
     // Help needs no pane, so it comes before the pane check.
+    if (isHelpToken(action)) {
+        writeOut(layoutUsage);
+        exit(0);
+    }
+    if (action === 'cycle' && hasHelpFlag(args)) {
+        writeOut(layoutCycleUsage);
+        exit(0);
+    }
     if (action === 'select' && hasHelpFlag(args)) {
         writeOut(layoutSelectUsage);
         exit(0);
