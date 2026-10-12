@@ -155,13 +155,14 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
     // Code fed to a shell or interpreter on stdin is hidden from every other rule: `… | base64 -d | sh`, `python3 <<EOF`.
     {
         name: 'piped or heredoc into a shell or interpreter',
-        test: (t) => {
+        test: (t, all) => {
             const word = commandWord(t);
             if (word === undefined || (!SHELLS.has(base(word)) && !INTERPRETERS.test(base(word)))) return false;
+            const piped = new RegExp(`\\|[^|]*(?:^|[\\s/])${base(word).replace(/[.]/g, '\\.')}(?:\\s|$)`).test(all.replace(/["'\\]/g, ''));
             // No script file to run means it reads its code from stdin, wherever that comes from.
             const args = t.slice(t.indexOf(word) + 1);
             const files = args.filter((f) => !f.startsWith('-') && !f.startsWith('<'));
-            return files.length === 0 || args.some((f) => f.startsWith('<<') || ['-', '-s', '/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'].includes(f));
+            return piped || files.length === 0 || args.some((f) => f.startsWith('<') || f === '-' || f === '-s' || /^\/(?:dev|proc)\//.test(f));
         }
     },
     // `python -c '…'` hides its command from every rule below; so does `bash -c` with quotes in the way.
