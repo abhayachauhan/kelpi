@@ -883,8 +883,9 @@ no new handler.
   other answer or EOF prints `not run`, exit 1.
 - **In the session** only when all hold: the suggestion was a `!` line or an inline `!`, it is
   one line, the source pane's `pane-list` entry has `agent: "claude"`, an `agent_session_id`
-  and a `status` other than `running`, and the capture ends with Claude Code's input box empty
-  (a bare `>` or `❯` line between the last two full-width rules). The status alone cannot tell
+  and `status` `idle` or `waitingForInput`, and the capture ends with Claude Code's input box
+  empty (a bare `>` or `❯` line at column 0 between the last two column-0 full-width rules, with
+  no `1.`-style menu, "Do you want" or "Esc to cancel" line below it). The status alone cannot tell
   a finished reply from a permission prompt (both are `waitingForInput`), and typing there
   would answer the prompt; a dialog, a draft or a placeholder hides the empty box. Both are
   re-read after the answer (a fresh viewport capture); if either changed, `Claude is no longer

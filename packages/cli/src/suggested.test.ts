@@ -118,6 +118,8 @@ describe('suggested helpers', () => {
         expect(promptReady([RULE, '> half a draft', RULE].join('\n'))).toBe(false);
         expect(promptReady([RULE, '> ', RULE, ' Do you want to proceed?', ' ❯ 1. Yes', RULE].join('\n'))).toBe(false);
         expect(promptReady('⏺ Done.')).toBe(false);
+        expect(promptReady(['     ' + RULE, '     >', '     ' + RULE].join('\n'))).toBe(false);
+        expect(promptReady([RULE, '> ', RULE, ' ❯ 1. Yes', ' Esc to cancel'].join('\n'))).toBe(false);
     });
 
     it('runs a one-line ! command in a Claude session at its empty prompt and everything else in a new pane', () => {
@@ -129,6 +131,7 @@ describe('suggested helpers', () => {
         expect(runsInSession({ kind: 'bang', command: 'docker run \\\n  --rm alpine' }, idle, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: 'running' }, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'ls' }, idle, 'Do you want to proceed?')).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: undefined }, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'ls' }, { status: 'idle' }, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, agent: 'codex' }, ready)).toBe(false);
     });

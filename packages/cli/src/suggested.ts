@@ -184,18 +184,25 @@ export interface SourcePane {
     readonly status?: string | undefined;
 }
 
-const PROMPT_EMPTY = /^\s*[>❯]\s*$/;
+// The input box's own rules start at column 0; rules inside reply text or tool output are indented.
+const BOX_RULE = /^[─━═]{20,}\s*$/;
+const PROMPT_EMPTY = /^[>❯]\s*$/;
+const MENU = /[>❯]\s*\d+\.|Do you want|Esc to cancel/;
+// A finished reply and a permission prompt are both waitingForInput; the screen tells them apart.
+const READY_STATUSES = new Set(['idle', 'waitingForInput']);
 
 /**
- * True when the capture ends with Claude Code's input box empty: a bare `>` prompt between two rules.
- * A permission prompt, a menu or a half-typed draft replaces it, and typing there would answer it.
+ * True when the capture ends with Claude Code's input box empty: a bare `>` prompt between its two
+ * rules, and no menu below it. A permission prompt or a half-typed draft replaces the bare prompt,
+ * and typing there would answer it.
  */
 export function promptReady(capture: string): boolean {
     const lines = capture.replace(/\r/g, '').split('\n');
-    const rules = lines.flatMap((line, index) => (RULE.test(line) ? [index] : []));
+    const rules = lines.flatMap((line, index) => (BOX_RULE.test(line) ? [index] : []));
     const below = rules.at(-1);
     const above = rules.at(-2);
-    return below !== undefined && above === below - 2 && PROMPT_EMPTY.test(at(lines, below - 1));
+    if (below === undefined || above !== below - 2 || !PROMPT_EMPTY.test(at(lines, below - 1))) return false;
+    return !lines.slice(below + 1).some((line) => MENU.test(line));
 }
 
 /**
@@ -205,6 +212,6 @@ export function promptReady(capture: string): boolean {
  */
 export function runsInSession(found: Suggested, pane: SourcePane, capture: string): boolean {
     const bang = found.kind === 'bang' || found.kind === 'inline';
-    const live = pane.agent === 'claude' && !!pane.agent_session_id && pane.status !== 'running';
+    const live = pane.agent === 'claude' && !!pane.agent_session_id && READY_STATUSES.has(pane.status ?? '');
     return bang && !found.command.includes('\n') && live && promptReady(capture);
 }
