@@ -875,8 +875,9 @@ no new handler.
   command per line, and a line ending in `\` keeps its newline. A rule or a `⎿` output line
   never continues a command. Skipped: everything from Claude's input box down (a draft is not a
   suggestion), the user's own echoed messages (a column-0 `> ` or `❯ ` line), a `!` line with
-  `⎿` output under it (already run), a tool's output (from a `⎿` line up to the next `⏺`
-  bullet, rule, or line no deeper than the `⎿`), and a fence whose body holds another fence
+  `⎿` output under it (already run), a tool's output (from a `⎿` line up to the next line
+  no deeper than the `⎿`, such as Claude's next `⏺` bullet or its input rule; a `⏺` or rule
+  printed deeper is the tool's text), and a fence whose body holds another fence
   (its opener scrolled out of the capture).
 - Nothing found: `kelpi pane run-suggested: no suggested command found in the pane`, exit 1.
   A command with a control character (other than newline), an invisible format character

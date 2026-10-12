@@ -26,9 +26,8 @@ const USER_PROMPT = /^[>❯] /;
 // sentence end, a closing backtick, or a "then" that goes on to the next step.
 const INLINE = /[\s`]! ([\w~./].*)$/;
 const SENTENCE_END = /`|[.;](?=\s+[A-Z(])|,?\s+(?=then\s)|,(?=\s+(?:and|or|which)\b)|[.,;:]?\s*$/;
-// A tool's output starts at `⎿`; Claude's next `⏺` bullet starts the reply again.
+// A tool's output starts at `⎿` and runs while its lines sit right of it.
 const OUTPUT = /^\s*⎿/;
-const BULLET = /^\s*[⏺●]/;
 const lastToken = (line: string): string => line.trimEnd().split(/\s+/).at(-1) ?? '';
 const firstToken = (line: string): string => line.trim().split(/\s+/)[0] ?? '';
 const at = (lines: readonly string[], index: number): string => lines[index] ?? '';
@@ -109,7 +108,8 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
             continue;
         }
         if (output !== null) {
-            if (!line.trim() || (lead(line) > output && !RULE.test(line) && !BULLET.test(line))) continue;
+            // Claude's own `⏺` bullets and rules sit left of `⎿`; ones drawn deeper are the tool's text.
+            if (!line.trim() || lead(line) > output) continue;
             output = null;
         }
         if (USER_PROMPT.test(line)) continue; // the user's own message, echoed into the transcript
