@@ -2375,7 +2375,7 @@ How it decides (`packages/daemon/src/handlers/app/auto-approve.ts`):
   or interpreter running inline code (`bash -lc`, `python -c`, `node -e`), any command that
   mentions `auto-approve` (so it cannot extend itself), `mkfs`,
   `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`, `git
-  branch -D`, `git -c alias.…`, `chmod -R`, `chown -R`, `rsync --delete`, `gh pr merge`, `gh api`
+  branch` with `-D`, `-f`, `-M` or `-C`, `git -c` and other git config overrides, `chmod -R`, `chown -R`, `rsync --delete`, `gh pr merge`, `gh api`
   with `DELETE`, `npm publish`, `kubectl` writes, `terraform apply`, `helm install`, `aws`
   writes, a variable as the command word, `alias` and `eval`, and any word with a brace or glob
   character (`{ } * ? [`), which the shell expands into a command only it sees

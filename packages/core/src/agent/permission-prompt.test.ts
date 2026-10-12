@@ -129,7 +129,15 @@ describe('neverAutoApprove', () => {
         ['gh api -X DELETE repos/o/r', 'gh api DELETE'],
         ['gh api --method delete repos/o/r', 'gh api DELETE'],
         ['gh api --method=DELETE repos/o/r', 'gh api DELETE'],
-        ["git -c alias.x='!rm -rf ~' x", 'git -c alias']
+        ['gh api -X=DELETE repos/o/r', 'gh api DELETE'],
+        ['git branch -d -f feature', 'git branch -D'],
+        ['git branch -df feature', 'git branch -D'],
+        ['git branch --force main HEAD~3', 'git branch -D'],
+        ['git branch -M old main', 'git branch -D'],
+        ['git branch --forc main HEAD~3', 'git branch -D'],
+        ["git -c alias.x='!rm -rf ~' x", 'git -c config'],
+        ["git -c core.pager='sh -c x' log", 'git -c config'],
+        ['GIT_CONFIG_COUNT=1 git log', 'git -c config']
     ])('refuses %s', (command, rule) => {
         expect(neverAutoApprove(command)).toBe(rule);
     });
@@ -138,7 +146,7 @@ describe('neverAutoApprove', () => {
         expect(neverAutoApprove('git pu\nsh origin main')).toBe('git push');
     });
 
-    it.each(['git status', 'ls -la', 'npm test', 'mv a b', 'echo $HOME', 'rm file.txt', 'git log --oneline', 'curl -o out https://x', 'python3 scripts/check.py', 'bash ./build.sh', 'git branch -d merged', 'chmod +x run.sh', 'gh api repos/o/r'])(
+    it.each(['git status', 'ls -la', 'npm test', 'mv a b', 'echo $HOME', 'rm file.txt', 'git log --oneline', 'curl -o out https://x', 'python3 scripts/check.py', 'bash ./build.sh', 'git branch -d merged', 'git -C repo branch -d merged','chmod +x run.sh', 'gh api repos/o/r'])(
         'lets %s through',
         (command) => {
             expect(neverAutoApprove(command)).toBeNull();

@@ -199,9 +199,22 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
         }
     },
     { name: 'rsync --delete', test: (t) => after(t, 'rsync')?.some((f) => f.startsWith('--delete') || f.startsWith('--remove-source-files')) ?? false },
-    { name: 'git branch -D', test: (t) => sub(t, 'git', ['branch']) && (after(t, 'git')?.some((f) => /^-[A-Za-z]*D/.test(f) || f === '--force') ?? false) },
-    // `git -c alias.x='!rm -rf ~' x` runs a shell command named only in config.
-    { name: 'git -c alias', test: (t) => after(t, 'git')?.some((f) => /alias\./i.test(f)) ?? false },
+    {
+        name: 'git branch -D',
+        test: (t) => {
+            // Force, -D, and the forced move or copy (-M, -C) can each drop a branch's commits.
+            const rest = after(t, 'git');
+            const i = rest?.indexOf('branch') ?? -1;
+            return rest !== null && i >= 0 && rest.slice(i + 1).some((f) => /^--fo/.test(f) || /^-[A-Za-z]*[fDMC]/.test(f));
+        }
+    },
+    // `git -c alias.x='!rm -rf ~' x` or `-c core.pager=…` runs a shell command named only in config.
+    {
+        name: 'git -c config',
+        test: (t) =>
+            (after(t, 'git')?.some((f) => f === '-c' || /^-c./.test(f) || f.startsWith('--config-env') || /alias\./i.test(f)) ?? false) ||
+            t.some((x) => /^GIT_CONFIG/.test(x))
+    },
     {
         name: 'chmod or chown -R',
         test: (t) => t.some((x, i) => (base(x) === 'chmod' || base(x) === 'chown') && t.slice(i + 1).some((f) => f === '--recursive' || /^-[A-Za-z]*R/.test(f)))
@@ -213,7 +226,7 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
             return (
                 rest !== null &&
                 rest.includes('api') &&
-                rest.some((f, i) => /^(?:-X|--method=?)DELETE$/i.test(f) || (['-X', '--method'].includes(f) && /^delete$/i.test(rest[i + 1] ?? '')))
+                rest.some((f, i) => /^(?:-X=?|--method=?)DELETE$/i.test(f) || (['-X', '--method'].includes(f) && /^delete$/i.test(rest[i + 1] ?? '')))
             );
         }
     },
