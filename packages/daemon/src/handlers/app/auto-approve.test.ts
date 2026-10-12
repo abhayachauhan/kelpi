@@ -13,9 +13,14 @@ const prompt = (command: string): string =>
 /** A harness whose panes show `screens` (one read each, the last repeating) and record every key sent. */
 function rig(options: { readonly agent?: 'claude' | 'codex' | null } = {}) {
     let clock = NOW;
+    let mono = 1_000;
     const h = harness({ initial: seeded(2), now: () => clock });
     if (options.agent !== null) {
-        for (const pane of [P1, P2]) h.send({ command: 'session-start', pane_id: pane, session_id: `s-${pane}`, agent: options.agent ?? 'claude' });
+        for (const pane of [P1, P2]) {
+            h.send({ command: 'session-start', pane_id: pane, session_id: `s-${pane}`, agent: options.agent ?? 'claude' });
+            // Kelpi's agent state shows the pane waiting, as Claude's hooks leave it while a prompt is open.
+            h.send({ command: 'stop', pane_id: pane, background_tasks: 0 });
+        }
     }
     const screens = new Map<string, string[]>();
     const keys: string[] = [];
@@ -36,7 +41,12 @@ function rig(options: { readonly agent?: 'claude' | 'codex' | null } = {}) {
         }
     };
     const scheduled: { run: () => void; ms: number }[] = [];
-    const approver = createAutoApprover({ now: () => clock, schedule: (run, ms) => scheduled.push({ run, ms }), secondReadDelayMs: 0 });
+    const approver = createAutoApprover({
+        now: () => clock,
+        monotonic: () => mono,
+        schedule: (run, ms) => scheduled.push({ run, ms }),
+        secondReadDelayMs: 0
+    });
     return {
         h,
         ctx,
@@ -50,6 +60,11 @@ function rig(options: { readonly agent?: 'claude' | 'codex' | null } = {}) {
             await flush();
         },
         advance: (ms: number) => {
+            clock += ms;
+            mono += ms;
+        },
+        /** The wall clock alone moves, as when the system time is changed. */
+        jumpWall: (ms: number) => {
             clock += ms;
         }
     };
@@ -96,6 +111,21 @@ describe('createAutoApprover', () => {
         expect(r.approver.status().left).toEqual([{ paneID: P1, command: '', reason: 'prompt not recognised' }]);
     });
 
+    it('answers only Bash prompts: MCP, Fetch and Edit prompts are left for the user', async () => {
+        const r = rig();
+        await r.on(10);
+        const other = (header: string, body: string, question: string): string =>
+            [FRAME, ` ${header}`, '', `   ${body}`, '', ` ${question}`, ' ❯ 1. Yes', '   2. No'].join('\n');
+        r.show(P1, other('Tool use', 'github - create_issue(title: "x") (MCP)', 'Do you want to proceed?'));
+        r.show(P2, other('Fetch', 'https://example.com', 'Do you want to proceed?'));
+        r.approver.onNotification(P1, r.ctx);
+        r.approver.onNotification(P2, r.ctx);
+        await flush();
+        r.show(P1, other('Edit file', 'src/a.ts', 'Do you want to make this edit to a.ts?'));
+        expect(await r.approver.check(P1, r.ctx)).toBe('unrecognised');
+        expect(r.keys).toEqual([]);
+    });
+
     it('stops at expiry and on off', async () => {
         const r = rig();
         r.show(P1, prompt('git status'));
@@ -128,6 +158,51 @@ describe('createAutoApprover', () => {
         codex.approver.turnOn(10, codex.ctx);
         codex.show(P1, prompt('git status'));
         expect(await codex.approver.check(P1, codex.ctx)).toBe('not-claude');
+        // A live session whose agent kind is unknown (null, as older saved state holds) is not taken for Claude.
+        const unknown = rig();
+        const store = unknown.ctx.store;
+        const real = store.getState.bind(store);
+        const nullKind: AppContext = {
+            ...unknown.ctx,
+            store: Object.assign(Object.create(store) as typeof store, {
+                getState: () => {
+                    const state = real();
+                    return { ...state, workspaces: state.workspaces.map((w) => ({ ...w, panes: w.panes.map((p) => ({ ...p, agentKind: null })) })) };
+                }
+            })
+        };
+        unknown.approver.turnOn(10, nullKind);
+        await flush();
+        unknown.show(P1, prompt('git status'));
+        expect(await unknown.approver.check(P1, nullKind)).toBe('not-claude');
+        expect(unknown.keys).toEqual([]);
+    });
+
+    it('acts only on a pane Kelpi shows waiting, never on a prompt drawn in output alone', async () => {
+        const r = rig();
+        for (const pane of [P1, P2]) r.h.send({ command: 'start', pane_id: pane, agent: 'claude' });
+        // A file Claude printed looks exactly like a prompt, and turning on reads every Claude pane.
+        r.show(P1, prompt('git status'));
+        await r.on(10);
+        expect(await r.approver.check(P1, r.ctx)).toBe('not-waiting');
+        expect(r.keys).toEqual([]);
+        // The prompt's own notification hook is agent state, so that prompt is answered.
+        r.approver.onNotification(P1, r.ctx);
+        await flush();
+        expect(r.keys).toEqual([`${P1}:enter`]);
+    });
+
+    it('expires on the monotonic clock, whatever the wall clock does', async () => {
+        const r = rig();
+        await r.on(10);
+        r.jumpWall(-3_600_000);
+        r.advance(10 * 60_000);
+        expect(r.approver.status().on).toBe(false);
+        await r.on(10);
+        r.jumpWall(24 * 3_600_000);
+        expect(r.approver.status()).toMatchObject({ on: true, until: NOW - 40 * 60_000 });
+        r.show(P1, prompt('git status'));
+        expect(await r.approver.check(P1, r.ctx)).toBe('approved');
     });
 
     it('does not press Enter again on the same prompt straight after approving it', async () => {

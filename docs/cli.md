@@ -2341,11 +2341,14 @@ kelpi auto-approve off [--json]
 kelpi auto-approve status [--json]
 ```
 
-For unattended runs: the daemon answers "Yes" to Claude Code permission prompts ("Do you want
-to proceed? ❯ 1. Yes") in every Claude pane, in every workspace, until the time runs out.
+For unattended runs: the daemon answers "Yes" to Claude Code's Bash permission prompts ("Bash
+command … Do you want to proceed? ❯ 1. Yes") in every Claude pane, in every workspace, until the
+time runs out. It only answers Bash prompts: MCP tool, Fetch and file edit prompts are always left
+for the user.
 
 - `on` turns it on for `minutes` (default 10, at most 10080, a week) and restarts the counts.
-  It checks every Claude pane once straight away, for prompts already open.
+  It checks once straight away every Claude pane Kelpi shows waiting for input, for prompts
+  already open.
 - `off` stops it now. `status` changes nothing.
 - Each prints the state after it:
   `Auto-approve is on until 14:32. 3 approved, 1 left for you.`, then one line per prompt left
@@ -2359,25 +2362,33 @@ How it decides (`packages/daemon/src/handlers/app/auto-approve.ts`):
 - **When:** on Claude's `Notification` hook (`kelpi event notification`, agent-lifecycle.md
   §5.3), which fires as a permission prompt opens. No polling. When the pane shows no prompt
   yet, or one still being drawn, it reads again after 0.25, 1 and 3 seconds.
-- **Which panes:** shell panes with a live Claude session (a session id, which `SessionEnd`
-  clears), so a pane Claude has left is never answered.
-- **What:** only a prompt in the exact shape Claude draws, at the bottom of the screen, with the
-  cursor on `1. Yes` (`@kelpi/core/agent` `parsePermissionPrompt`). Anything else is left.
+- **Which panes:** shell panes whose agent is `claude` with a live session (a session id, which
+  `SessionEnd` clears), so a pane Claude has left is never answered. The pane must also be
+  waiting by Kelpi's agent state: the notification itself, or a `waitingForInput` status. A
+  prompt drawn in Claude's output (a file shown on screen) is never enough on its own.
+- **What:** only a Bash prompt in the exact shape Claude draws, at the bottom of the screen, with
+  the question `Do you want to proceed?` and the cursor on `1. Yes` (`@kelpi/core/agent`
+  `parsePermissionPrompt`). Anything else is left.
 - **Never:** a command on the never-auto-approve list is left for the user, with quotes and
   backslashes seen through: `rm -r`, `git push`, `sudo`, anything piped or heredoc'd into a
   shell or interpreter, a shell
   or interpreter running inline code (`bash -lc`, `python -c`, `node -e`), any command that
   mentions `auto-approve` (so it cannot extend itself), `mkfs`,
-  `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`, `rsync
-  --delete`, `gh pr merge`, `npm publish`, `kubectl` writes, `terraform apply`, `helm install`,
-  `aws` writes, a variable as the command word, `alias` and `eval` (`NEVER_AUTO_APPROVE`).
-  It is a denylist: an agent set on getting past it can (an encoded payload, for example).
+  `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`, `git
+  branch -D`, `git -c alias.…`, `chmod -R`, `chown -R`, `rsync --delete`, `gh pr merge`, `gh api`
+  with `DELETE`, `npm publish`, `kubectl` writes, `terraform apply`, `helm install`, `aws`
+  writes, a variable as the command word, `alias` and `eval`, and any word with a brace or glob
+  character (`{ } * ? [`), which the shell expands into a command only it sees
+  (`NEVER_AUTO_APPROVE`). The list is best effort, not a sandbox: an agent set on getting past
+  it can (an encoded payload, for example).
 - **Before the key:** the pane is read again 0.1 seconds later and must show the same prompt;
   only then is Enter sent. A prompt still showing within 15 seconds of its Enter is not sent
   another, unless a new notification says it is a new prompt. A key the user presses in that
   0.1 seconds (Down, say) can move the cursor before the Enter lands.
 - **`status`** lists the latest 100 prompts left for the user.
-- **Expiry:** checked before every key. Nothing is persisted: a daemon restart turns it off.
+- **Expiry:** checked before every key, on a monotonic clock, so changing the system time does
+  not extend it; the wall clock is only used for the `until` shown. Nothing is persisted: a
+  daemon restart turns it off.
 
 ---
 

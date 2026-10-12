@@ -81,20 +81,21 @@ export const globalUsage = `Usage:
   kelpi daemon stop [--force]                            # ends every terminal and agent; asks first
   kelpi daemon restart-old-terminals [--force]           # moves terminals off an older terminal host
   kelpi install-hooks [--claude-dir <dir>] [--codex-dir <dir>] [--link] [--dry-run] [--json]
-  kelpi auto-approve on [minutes]|off|status [--json]    # answers Claude permission prompts for a while
+  kelpi auto-approve on [minutes]|off|status [--json]    # answers Claude Bash prompts for a while
 
 `;
 
 export const autoApproveUsage = `Usage:
-  kelpi auto-approve on [minutes]   Answer "Yes" to Claude permission prompts in every Claude
+  kelpi auto-approve on [minutes]   Answer "Yes" to Claude Bash prompts in every Claude
                                     pane for this long (default 10 minutes, at most 10080)
   kelpi auto-approve off            Stop now
   kelpi auto-approve status         On or off, until when, and what was approved or left
   Add --json for the daemon's reply.
 
-Before each "Yes" it reads the pane twice and checks the prompt is the same. It never answers
-for a command on the never-auto-approve list (rm -r, git push, sudo, curl | sh, and others):
-those prompts wait for you. A daemon restart turns it off.
+Only Bash prompts are answered: MCP, Fetch and file edit prompts wait for you. Before each
+"Yes" it reads the pane twice and checks the prompt is the same. It never answers for a
+command on the never-auto-approve list (rm -r, git push, sudo, curl | sh, and others): those
+prompts wait for you. The list is best effort, not a sandbox. A daemon restart turns it off.
 `;
 
 export const daemonUsage = `Usage:

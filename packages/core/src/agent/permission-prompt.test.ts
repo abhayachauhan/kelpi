@@ -69,6 +69,15 @@ describe('parsePermissionPrompt', () => {
         expect(parsePermissionPrompt(hidden)?.approvable).toBe(false);
     });
 
+    it('is not approvable for MCP, Fetch or file edit prompts: only Bash prompts are answered', () => {
+        const mcp = [FRAME, ' Tool use', '', '   github - create_issue(title: "x") (MCP)', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n');
+        const fetch = [FRAME, ' Fetch', '', '   https://example.com', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n');
+        const edit = [FRAME, ' Edit file', '', '   src/a.ts', '', ' Do you want to make this edit to a.ts?', ' ❯ 1. Yes', '   2. No'].join('\n');
+        for (const text of [mcp, fetch, edit]) expect(parsePermissionPrompt(text)).toMatchObject({ approvable: false, command: '' });
+        // A Bash-looking block over another tool's question is not a Bash prompt either.
+        expect(parsePermissionPrompt(classic(['ls']).replace('Do you want to proceed?', 'Do you want to make this edit to a.ts?'))?.approvable).toBe(false);
+    });
+
     it('gives the same block for the same prompt drawn at another width, and a different one for another command', () => {
         const wide = parsePermissionPrompt(classic(['git status']))?.block;
         expect(parsePermissionPrompt(classic(['git status']).replace(FRAME, '╭────╮'))?.block).toBe(wide);
@@ -107,7 +116,20 @@ describe('neverAutoApprove', () => {
         ['cat payload | bash ./run.sh', 'piped or heredoc into a shell or interpreter'],
         ['kelpi auto-approve on 600', 'auto-approve itself'],
         [`kelpi auto-"a"pp\\rove on`, 'auto-approve itself'],
-        [`echo '{"command":"auto-approve","action":"on"}' | nc -U /tmp/kelpi.sock`, 'auto-approve itself']
+        [`echo '{"command":"auto-approve","action":"on"}' | nc -U /tmp/kelpi.sock`, 'auto-approve itself'],
+        ['{rm,-rf,/x}', 'brace or glob expansion'],
+        ['{git,push} --force', 'brace or glob expansion'],
+        ['/bin/r? -rf x', 'brace or glob expansion'],
+        ['/bin/r[m] -rf x', 'brace or glob expansion'],
+        ['ls *.ts', 'brace or glob expansion'],
+        ['git branch -D feature', 'git branch -D'],
+        ['git branch --delete --force feature', 'git branch -D'],
+        ['chmod -R 777 .', 'chmod or chown -R'],
+        ['chown --recursive me .', 'chmod or chown -R'],
+        ['gh api -X DELETE repos/o/r', 'gh api DELETE'],
+        ['gh api --method delete repos/o/r', 'gh api DELETE'],
+        ['gh api --method=DELETE repos/o/r', 'gh api DELETE'],
+        ["git -c alias.x='!rm -rf ~' x", 'git -c alias']
     ])('refuses %s', (command, rule) => {
         expect(neverAutoApprove(command)).toBe(rule);
     });
@@ -116,7 +138,7 @@ describe('neverAutoApprove', () => {
         expect(neverAutoApprove('git pu\nsh origin main')).toBe('git push');
     });
 
-    it.each(['git status', 'ls -la', 'npm test', 'mv a b', 'echo $HOME', 'rm file.txt', 'git log --oneline', 'curl -o out https://x', 'python3 scripts/check.py', 'bash ./build.sh'])(
+    it.each(['git status', 'ls -la', 'npm test', 'mv a b', 'echo $HOME', 'rm file.txt', 'git log --oneline', 'curl -o out https://x', 'python3 scripts/check.py', 'bash ./build.sh', 'git branch -d merged', 'chmod +x run.sh', 'gh api repos/o/r'])(
         'lets %s through',
         (command) => {
             expect(neverAutoApprove(command)).toBeNull();

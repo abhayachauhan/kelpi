@@ -4,7 +4,8 @@
  *
  * Driven by the agent's own `notification` hook (agent-lifecycle.md §5.3), the event Claude fires
  * when a permission prompt opens, so there is no polling. Turning it on also checks every Claude
- * pane once, for prompts already open. Each Enter goes out only after two fresh reads of the pane
+ * pane Kelpi shows waiting for input once, for prompts already open. Only Bash prompts are
+ * answered; MCP, Fetch and file prompts are left for the user. Each Enter goes out only after two fresh reads of the pane
  * show the same recognised prompt, so a key never lands on anything else. Commands on the
  * never-auto-approve list (`@kelpi/core/agent`) are left for the user. Nothing is persisted:
  * a daemon restart turns it off.
@@ -34,6 +35,7 @@ export type AutoApproveOutcome =
     | 'approved'
     | 'off'
     | 'not-claude'
+    | 'not-waiting'
     | 'busy'
     | 'no-prompt'
     | 'unrecognised'
@@ -61,14 +63,20 @@ export interface AutoApprover {
     turnOn(minutes: number, ctx: AppContext): void;
     turnOff(): void;
     status(): AutoApproveStatus;
-    /** One check of one pane: read, decide, read again, Enter. `final: false` does not record an unrecognised prompt. */
-    check(paneID: string, ctx: AppContext, final?: boolean): Promise<AutoApproveOutcome>;
+    /**
+     * One check of one pane: read, decide, read again, Enter. `final: false` does not record an unrecognised prompt;
+     * `notified` says the agent's own hook just reported a prompt, else the pane must be waiting for input.
+     */
+    check(paneID: string, ctx: AppContext, final?: boolean, notified?: boolean): Promise<AutoApproveOutcome>;
     /** The `notification` hook's entry: a new prompt, so `check`, re-read on the retry delays while it is not ready. */
     onNotification(paneID: string, ctx: AppContext): void;
 }
 
 export interface AutoApproverDeps {
+    /** Wall clock, only for the `until` shown to the user. */
     readonly now: () => number;
+    /** Monotonic clock for the expiry and grace period, so a wall-clock jump cannot extend a run. */
+    readonly monotonic?: (() => number) | undefined;
     readonly schedule?: ((run: () => void, ms: number) => void) | undefined;
     readonly secondReadDelayMs?: number | undefined;
 }
@@ -77,7 +85,12 @@ export interface AutoApproverDeps {
 export function isClaudePane(ctx: AppContext, paneID: string): boolean {
     const pane = findPaneAnywhere(ctx.store.getState(), paneID)?.pane;
     if (pane === undefined || pane.type !== 'shell') return false;
-    return pane.agentSessionID !== null && pane.agentKind !== 'codex';
+    return pane.agentSessionID !== null && pane.agentKind === 'claude';
+}
+
+/** Kelpi's agent state, not the screen, says the pane is waiting: a prompt drawn in output alone never counts. */
+function isWaiting(ctx: AppContext, paneID: string): boolean {
+    return findPaneAnywhere(ctx.store.getState(), paneID)?.pane.status === 'waitingForInput';
 }
 
 async function readScreen(ctx: AppContext, paneID: string): Promise<string | null> {
@@ -98,6 +111,9 @@ const defaultSchedule = (run: () => void, ms: number): void => {
 export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
     const schedule = deps.schedule ?? defaultSchedule;
     const secondReadDelay = deps.secondReadDelayMs ?? SECOND_READ_DELAY_MS;
+    const monotonic = deps.monotonic ?? (() => performance.now());
+    // `deadline` (monotonic) decides; `until` (wall clock) is only reported.
+    let deadline: number | null = null;
     let until: number | null = null;
     let approved = 0;
     let left: LeftPrompt[] = [];
@@ -108,8 +124,11 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
     const inFlight = new Set<string>();
 
     const isOn = (): boolean => {
-        if (until !== null && deps.now() >= until) until = null;
-        return until !== null;
+        if (deadline !== null && monotonic() >= deadline) {
+            deadline = null;
+            until = null;
+        }
+        return deadline !== null;
     };
     const leave = (paneID: string, block: string, command: string, reason: string): void => {
         const key = `${paneID}\n${block}`;
@@ -119,7 +138,7 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
         if (left.length > LEFT_CAP) left.splice(0, left.length - LEFT_CAP);
     };
 
-    const decide = async (paneID: string, ctx: AppContext, final: boolean): Promise<AutoApproveOutcome> => {
+    const decide = async (paneID: string, ctx: AppContext, final: boolean, notified: boolean): Promise<AutoApproveOutcome> => {
         const started = generation;
         const first = await readScreen(ctx, paneID);
         const prompt = first === null ? null : parsePermissionPrompt(first);
@@ -134,27 +153,29 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
             return 'never';
         }
         const last = lastApproved.get(paneID);
-        if (last !== undefined && last.block === prompt.block && deps.now() - last.at < SAME_PROMPT_GRACE_MS) return 'repeat';
+        if (last !== undefined && last.block === prompt.block && monotonic() - last.at < SAME_PROMPT_GRACE_MS) return 'repeat';
         // The second read sits right before the key: the prompt must not have changed since the first.
         if (secondReadDelay > 0) await new Promise<void>((resolve) => schedule(resolve, secondReadDelay));
         const second = await readScreen(ctx, paneID);
         const again = second === null ? null : parsePermissionPrompt(second);
         if (again === null || !again.approvable || again.block !== prompt.block) return 'changed';
         if (generation !== started || !isOn() || !isClaudePane(ctx, paneID)) return 'off';
+        if (!notified && !isWaiting(ctx, paneID)) return 'not-waiting';
         ctx.input.sendNamedKey(paneID, 'enter');
         approved += 1;
-        lastApproved.set(paneID, { block: prompt.block, at: deps.now() });
+        lastApproved.set(paneID, { block: prompt.block, at: monotonic() });
         return 'approved';
     };
 
-    const check = async (paneID: string, ctx: AppContext, final = true): Promise<AutoApproveOutcome> => {
+    const check = async (paneID: string, ctx: AppContext, final = true, notified = false): Promise<AutoApproveOutcome> => {
         if (!isOn()) return 'off';
         if (!isClaudePane(ctx, paneID)) return 'not-claude';
+        if (!notified && !isWaiting(ctx, paneID)) return 'not-waiting';
         // One check per pane at a time: two reads racing could each send an Enter.
         if (inFlight.has(paneID)) return 'busy';
         inFlight.add(paneID);
         try {
-            return await decide(paneID, ctx, final);
+            return await decide(paneID, ctx, final, notified);
         } finally {
             inFlight.delete(paneID);
         }
@@ -162,7 +183,7 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
 
     const attempt = (paneID: string, ctx: AppContext, retry: number): void => {
         const delay = AUTO_APPROVE_RETRY_MS[retry];
-        void check(paneID, ctx, delay === undefined).then((outcome) => {
+        void check(paneID, ctx, delay === undefined, true).then((outcome) => {
             // A busy pane is mid-read by another check, which may have read the screen before this prompt opened.
             if (RETRIED.has(outcome) && delay !== undefined) schedule(() => attempt(paneID, ctx, retry + 1), delay);
         });
@@ -170,6 +191,7 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
 
     return {
         turnOn(minutes, ctx) {
+            deadline = monotonic() + minutes * 60_000;
             until = deps.now() + minutes * 60_000;
             generation += 1;
             approved = 0;
@@ -183,6 +205,7 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
             }
         },
         turnOff() {
+            deadline = null;
             until = null;
             generation += 1;
         },

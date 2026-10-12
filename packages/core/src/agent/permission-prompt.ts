@@ -25,6 +25,9 @@ const CURSOR = /^[❯>›]\s*\d+[.)]\s/;
 const OPTION_LINE = /^[❯>›]?\s*\d+[.)]\s/;
 // Exact header strings only, so a command line such as `echo run command` never acts as one.
 const HEADER = /^(?:bash command|edit file|create file|write file|read file|fetch|web fetch|tool use)(?: · from the [\w .-]{1,40} agent)?$/i;
+// Only Bash prompts are approvable; MCP, Fetch and file prompts are recognised so they are left alone.
+const BASH_HEADER = /^bash command(?: · from the [\w .-]{1,40} agent)?$/i;
+const BASH_QUESTION = /^do you want to proceed\?$/i;
 // The dashed rules newer Claude versions draw above and below the command.
 const RULE = /^[╌╍┄┅┈┉]{3,}$/u;
 const DECOR = /^[\s─━┌┐└┘├┤┬┴┼╭╮╯╰═╔╗╚╝-]*$/u;
@@ -71,7 +74,7 @@ export function parsePermissionPrompt(text: string): PermissionPrompt | null {
     const frameAt = headerAt >= 1 && FRAME.test(at(lines, headerAt - 1)) ? headerAt - 1 : -1;
     let approvable = false;
     let commandLines: readonly string[] = [];
-    if (frameAt >= 0) {
+    if (frameAt >= 0 && BASH_HEADER.test(at(lines, headerAt)) && BASH_QUESTION.test(at(lines, q))) {
         let i = headerAt + 1;
         if (i < q && blank(at(lines, i))) i += 1;
         const runStart = i;
@@ -196,6 +199,24 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
         }
     },
     { name: 'rsync --delete', test: (t) => after(t, 'rsync')?.some((f) => f.startsWith('--delete') || f.startsWith('--remove-source-files')) ?? false },
+    { name: 'git branch -D', test: (t) => sub(t, 'git', ['branch']) && (after(t, 'git')?.some((f) => /^-[A-Za-z]*D/.test(f) || f === '--force') ?? false) },
+    // `git -c alias.x='!rm -rf ~' x` runs a shell command named only in config.
+    { name: 'git -c alias', test: (t) => after(t, 'git')?.some((f) => /alias\./i.test(f)) ?? false },
+    {
+        name: 'chmod or chown -R',
+        test: (t) => t.some((x, i) => (base(x) === 'chmod' || base(x) === 'chown') && t.slice(i + 1).some((f) => f === '--recursive' || /^-[A-Za-z]*R/.test(f)))
+    },
+    {
+        name: 'gh api DELETE',
+        test: (t) => {
+            const rest = after(t, 'gh');
+            return (
+                rest !== null &&
+                rest.includes('api') &&
+                rest.some((f, i) => /^(?:-X|--method=?)DELETE$/i.test(f) || (['-X', '--method'].includes(f) && /^delete$/i.test(rest[i + 1] ?? '')))
+            );
+        }
+    },
     {
         name: 'gh pr merge or gh repo delete',
         test: (t) => {
@@ -220,7 +241,9 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
     },
     // `R=rm; $R -rf x`: the real command word is only known when the shell runs it.
     { name: 'command word is a variable', test: (t) => /^\$/.test(commandWord(t) ?? '') },
-    { name: 'alias or eval', test: (t) => t.some((x) => base(x) === 'alias' || base(x) === 'eval') }
+    { name: 'alias or eval', test: (t) => t.some((x) => base(x) === 'alias' || base(x) === 'eval') },
+    // `{rm,-rf,/x}` and `/bin/r? -rf x` only become a command once the shell expands them.
+    { name: 'brace or glob expansion', test: (t) => t.some((x) => /[{}*?[]/.test(x)) }
 ];
 
 // Quotes and backslashes are deleted, not spaced, so r"m" -rf and r\m -rf read as rm -rf, as the shell runs them.
