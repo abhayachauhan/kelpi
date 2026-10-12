@@ -100,6 +100,7 @@ describe('neverAutoApprove', () => {
         ['bash -c "echo hi"', 'shell or interpreter running inline code'],
         ['bash -lc "echo hi"', 'shell or interpreter running inline code'],
         ['kelpi auto-approve on 600', 'auto-approve itself'],
+        [`kelpi auto-"a"pp\\rove on`, 'auto-approve itself'],
         [`echo '{"command":"auto-approve","action":"on"}' | nc -U /tmp/kelpi.sock`, 'auto-approve itself']
     ])('refuses %s', (command, rule) => {
         expect(neverAutoApprove(command)).toBe(rule);

@@ -163,7 +163,7 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
             )
     },
     // Auto-approve must not be able to extend or restart itself, by the CLI or a raw socket write.
-    { name: 'auto-approve itself', test: (_t, all) => /auto-?approve/i.test(all) },
+    { name: 'auto-approve itself', test: (_t, all) => /auto-?approve/i.test(all.replace(/["'\\]/g, '')) },
     { name: 'mkfs', test: (t) => t.some((x) => /^mkfs(?:\.|$)/.test(base(x))) },
     { name: 'dd of=', test: (t) => after(t, 'dd')?.some((f) => f.startsWith('of=')) ?? false },
     {
