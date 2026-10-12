@@ -309,8 +309,8 @@ Exit codes: 0 on success, non-zero on failure.
 export const paneRunSuggestedUsage = `Usage:
   kelpi pane run-suggested [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--print]
 
-Finds the last command Claude suggested in a pane (a "! command" line, one inside
-a sentence, or a code block), rejoins the lines Claude wrapped, prints it, and
+Finds the last command Claude suggested in a pane (a "! command" on its
+own line, or a code block), rejoins the lines Claude wrapped, prints it, and
 runs it after you answer y. A one-line "! command" runs in that Claude session,
 typed as "! command", when Claude waits at its empty prompt. Anything else, including any
 multi-line command, runs in a new shell pane next to it. Without --target, reads

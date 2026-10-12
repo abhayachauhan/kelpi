@@ -4,7 +4,7 @@
  * indent and two more spaces). Everything here is pure; the command in commands/pane.ts does the I/O.
  */
 
-export type SuggestedKind = 'bang' | 'inline' | 'fence';
+export type SuggestedKind = 'bang' | 'fence';
 
 export interface Suggested {
     readonly command: string;
@@ -22,10 +22,6 @@ const BANG = /^(\s*(?:[⏺●]\s+)?)! (\S.*)$/;
 const FENCE_OPEN = /^(\s*)```\s*(?:bash|sh|shell|zsh)?\s*$/;
 const FENCE_CLOSE = /^\s*```\s*$/;
 const USER_PROMPT = /^[>❯] /;
-// `! <command>` inside a sentence ("Log in again with ! aws sso login --profile x. Then ..."): it runs to the
-// sentence end, a closing backtick, or a "then" that goes on to the next step.
-const INLINE = /[\s`]! ([\w~./].*)$/;
-const SENTENCE_END = /`|[.;](?=\s+[A-Z(])|,?\s+(?=then\s)|,(?=\s+(?:and|or|which)\b)|[.,;:]?\s*$/;
 // A tool's output starts at `⎿` and runs while its lines sit right of it.
 const OUTPUT = /^\s*⎿/;
 const lastToken = (line: string): string => line.trimEnd().split(/\s+/).at(-1) ?? '';
@@ -68,13 +64,6 @@ export function joinWraps(lines: readonly string[], indent: number, wrap = 0): s
 
 // A rule, or the `⎿` Claude Code puts under a command's output, never continues a command.
 const ends = (line: string): boolean => !line.trim() || RULE.test(line) || line.trimStart().startsWith('⎿');
-
-/** Lines after `from` that continue a one-line command at `indent` (indented by exactly indent + 2). */
-function continuation(lines: readonly string[], from: number, indent: number): number {
-    let end = from + 1;
-    while (end < lines.length && !ends(at(lines, end)) && lead(at(lines, end)) === indent + 2) end += 1;
-    return end;
-}
 
 /**
  * Lines after `from` that continue a `! ` command at `indent`. Claude Code wraps them under the text
@@ -138,15 +127,7 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
             i = close;
             continue;
         }
-        const inline = INLINE.exec(line);
-        if (inline) {
-            // The sentence may wrap onto lines two deeper (a bullet's text); join them, then cut at its end.
-            const end = continuation(lines, i, lead(line));
-            const block = [' '.repeat(lead(line) + 2) + (inline[1] ?? ''), ...lines.slice(i + 1, end)];
-            const text = joinWraps(block, lead(line), wrap).trim();
-            const command = text.slice(0, text.search(SENTENCE_END)).trim();
-            if (command && !command.includes('\n')) found.push({ kind: 'inline', command });
-        }
+        // A `! cmd` inside a sentence is not offered: plain screen text can't tell where the command ends.
     }
     return found;
 }
@@ -210,7 +191,7 @@ export function promptReady(capture: string): boolean {
  * A trailing `\` counts as more than one line: with Enter after it, Claude's box starts a new line.
  */
 export function runsInSession(found: Suggested, pane: SourcePane, capture: string): boolean {
-    const bang = found.kind === 'bang' || found.kind === 'inline';
+    const bang = found.kind === 'bang';
     const oneLine = !found.command.includes('\n') && !found.command.trimEnd().endsWith('\\');
     const live = pane.agent === 'claude' && !!pane.agent_session_id && READY_STATUSES.has(pane.status ?? '');
     return bang && oneLine && live && promptReady(capture);

@@ -41,21 +41,10 @@ describe('findSuggested', () => {
         expect(findSuggested(['  ! git status', '  ! git log -1'].join('\n'))?.command).toBe('git log -1');
     });
 
-    it('finds a ! command inside a sentence and cuts it at the sentence end', () => {
-        const capture = [
-            '  Next',
-            "  - Log in again with ! aws sso login --profile Meandu-Management-562691664125. I'll confirm the role is missing, then plan.",
-            '    The plan should show only the new role being added.',
-            '',
-            RULE
-        ];
-        expect(findSuggested(capture.join('\n'))).toEqual({
-            kind: 'inline',
-            command: 'aws sso login --profile Meandu-Management-562691664125'
-        });
-        expect(findSuggested('  Run ! gh auth status then retry.')?.command).toBe('gh auth status');
-        expect(findSuggested('  Run `! gh auth status` then retry.')?.command).toBe('gh auth status');
-        expect(findSuggested('  Run ! git status, then tell me.')?.command).toBe('git status');
+    it('never offers a ! command inside a sentence, whose end plain text cannot show', () => {
+        // A real Claude Code reply: taking the rest of the sentence ran `gh auth status first to check ...`.
+        expect(findSuggested('⏺ Run ! gh auth status first to check whether your GitHub login has expired.')).toBeNull();
+        expect(findSuggested('  Run ! rm -rf build first to clean up, then retry.')).toBeNull();
         expect(findSuggested('  Wow! git is great')).toBeNull();
     });
 
@@ -160,7 +149,7 @@ describe('suggested helpers', () => {
         const ready = [RULE, '> ', RULE].join('\n');
         const idle = { agent: 'claude', agent_session_id: 'S', status: 'waitingForInput' };
         expect(runsInSession({ kind: 'bang', command: 'gh auth status' }, idle, ready)).toBe(true);
-        expect(runsInSession({ kind: 'inline', command: 'gh auth status' }, { ...idle, status: 'idle' }, ready)).toBe(true);
+        expect(runsInSession({ kind: 'bang', command: 'gh auth status' }, { ...idle, status: 'idle' }, ready)).toBe(true);
         expect(runsInSession({ kind: 'fence', command: 'gh auth status' }, idle, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'docker run \\\n  --rm alpine' }, idle, ready)).toBe(false);
         expect(runsInSession({ kind: 'bang', command: 'docker run \\' }, idle, ready)).toBe(false);

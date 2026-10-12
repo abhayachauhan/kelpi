@@ -866,8 +866,7 @@ no new handler.
 - Help to stdout, exit 0. Leftovers rejected with the `capture` hint. Target resolution is
   exactly `pane capture`'s (no `--target` => `requirePaneID()`, silent exit 0 outside).
 - Reads `pane-capture` with `lines: 200, scrollback: true`, then finds the **last** suggestion
-  (`packages/cli/src/suggested.ts`): a `! <cmd>` line, a `! <cmd>` inside a sentence (cut at the
-  sentence end, a closing backtick or a following "then"), or a fenced block that is unlabelled
+  (`packages/cli/src/suggested.ts`): a `! <cmd>` line or a fenced block that is unlabelled
   or labelled `bash`, `sh`, `shell` or `zsh`.
   Claude Code's wraps (a newline plus the block's indent and two more spaces, or back at the `!`
   column) are rejoined with a space, or with nothing when the line filled the width read from
@@ -878,7 +877,8 @@ no new handler.
   `⎿` output under it (already run), a tool's output (from a `⎿` line up to the next line
   no deeper than the `⎿`, such as Claude's next `⏺` bullet or its input rule; a `⏺` or rule
   printed deeper is the tool's text), and a fence whose body holds another fence
-  (its opener scrolled out of the capture).
+  (its opener scrolled out of the capture). A `! <cmd>` inside a sentence is never offered:
+  plain screen text cannot show where the command ends.
 - Nothing found: `kelpi pane run-suggested: no suggested command found in the pane`, exit 1.
   A command with a control character (other than newline), an invisible format character
   (`\p{Cf}`: bidi overrides, zero-width), a Unicode line or paragraph separator, a combining
@@ -889,7 +889,7 @@ no new handler.
   `Run it in a new shell pane? [y/N]`, and reads one line of stdin. Only `y`/`yes` runs it; any
   other answer or EOF prints `not run`, exit 1. So run as `! kelpi pane run-suggested` from
   inside Claude Code, where stdin gives no answer, it never runs anything; use `--print` there.
-- **In the session** only when all hold: the suggestion was a `!` line or an inline `!`, it is
+- **In the session** only when all hold: the suggestion was a `!` line, it is
   one line and does not end in `\` (Enter after it would start a new line in Claude's box), the
   source pane's `pane-list` entry (looked up in every workspace when the capture reply has no
   `workspace_id`) has `agent: "claude"`, an `agent_session_id`
