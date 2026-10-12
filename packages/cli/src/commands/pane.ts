@@ -650,7 +650,8 @@ async function handlePaneRunSuggested(args: string[]): Promise<void> {
     if (workspace !== null) payload['workspace'] = workspace;
     const captured = await decodeReply(payload, RUN_SUGGESTED);
 
-    const found = findSuggested(asString(captured['text']) ?? '');
+    const text = asString(captured['text']) ?? '';
+    const found = findSuggested(text);
     if (found === null) {
         errLine(`${RUN_SUGGESTED}: no suggested command found in the pane`);
         exit(1);
@@ -666,7 +667,7 @@ async function handlePaneRunSuggested(args: string[]): Promise<void> {
     const paneID = asString(captured['pane_id']) ?? '?';
     const workspaceID = asString(captured['workspace_id']) ?? '';
     const source = await listedPane(paneID, workspaceID);
-    const inSession = runsInSession(found, source);
+    const inSession = runsInSession(found, source, text);
     const where = inSession ? `in this Claude session as "! ${found.command}"` : 'in a new shell pane';
     if (!(await confirm(`Run it ${where}?`))) {
         errLine(`${RUN_SUGGESTED}: not run`);
@@ -674,9 +675,10 @@ async function handlePaneRunSuggested(args: string[]): Promise<void> {
     }
 
     if (inSession) {
-        // Claude may have started working while the user read the prompt; never type into a busy session.
-        if (!runsInSession(found, await listedPane(paneID, workspaceID))) {
-            errLine(`${RUN_SUGGESTED}: Claude is no longer idle in pane ${paneID}; not run`);
+        // Claude may have started working or asked for permission while the user read the question.
+        const screen = asString((await decodeReply({ command: 'pane-capture', target: paneID }, RUN_SUGGESTED))['text']);
+        if (!runsInSession(found, await listedPane(paneID, workspaceID), screen ?? '')) {
+            errLine(`${RUN_SUGGESTED}: Claude is no longer waiting at its prompt in pane ${paneID}; not run`);
             exit(1);
         }
         await decodeReply({ command: 'pane-send', target: paneID, text: `! ${found.command}`, bare: false }, RUN_SUGGESTED);

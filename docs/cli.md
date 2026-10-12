@@ -882,9 +882,13 @@ no new handler.
   `Run it in a new shell pane? [y/N]`, and reads one line of stdin. Only `y`/`yes` runs it; any
   other answer or EOF prints `not run`, exit 1.
 - **In the session** only when all hold: the suggestion was a `!` line or an inline `!`, it is
-  one line, and the source pane's `pane-list` entry has `agent: "claude"`, an
-  `agent_session_id` and `status: "idle"` (so never mid-reply or at a permission prompt). The
-  entry is re-read after the answer; if Claude is no longer idle, `not run`, exit 1. Sends
+  one line, the source pane's `pane-list` entry has `agent: "claude"`, an `agent_session_id`
+  and a `status` other than `running`, and the capture ends with Claude Code's input box empty
+  (a bare `>` or `❯` line between the last two full-width rules). The status alone cannot tell
+  a finished reply from a permission prompt (both are `waitingForInput`), and typing there
+  would answer the prompt; a dialog, a draft or a placeholder hides the empty box. Both are
+  re-read after the answer (a fresh viewport capture); if either changed, `Claude is no longer
+  waiting at its prompt`, exit 1. Sends
   `pane-send` with `text: "! <cmd>"`; Claude Code runs it and the output lands in the session.
   Ack `ran in <pane-id>`.
 - **Otherwise** a new shell pane: `pane-split` next to the source pane with `focus: true` and

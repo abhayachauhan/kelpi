@@ -312,7 +312,7 @@ export const paneRunSuggestedUsage = `Usage:
 Finds the last command Claude suggested in a pane (a "! command" line, one inside
 a sentence, or a code block), rejoins the lines Claude wrapped, prints it, and
 runs it after you answer y. A one-line "! command" runs in that Claude session,
-typed as "! command", when Claude is idle. Anything else, including any
+typed as "! command", when Claude waits at its empty prompt. Anything else, including any
 multi-line command, runs in a new shell pane next to it. Without --target, reads
 the calling pane (requires KELPI_PANE_ID).
 

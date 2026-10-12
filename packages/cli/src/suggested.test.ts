@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { commandProblem, findSuggested, joinWraps, runsInSession, wrapWidth } from './suggested.js';
+import { commandProblem, findSuggested, joinWraps, promptReady, runsInSession, wrapWidth } from './suggested.js';
 
 const RULE = '─'.repeat(60);
 
@@ -112,15 +112,24 @@ describe('suggested helpers', () => {
         expect(commandProblem('rm​ -rf x')).toMatch(/invisible/);
     });
 
-    it('runs a one-line ! command in an idle Claude session and everything else in a new pane', () => {
-        const idle = { agent: 'claude', agent_session_id: 'S', status: 'idle' };
-        expect(runsInSession({ kind: 'bang', command: 'gh auth status' }, idle)).toBe(true);
-        expect(runsInSession({ kind: 'inline', command: 'gh auth status' }, idle)).toBe(true);
-        expect(runsInSession({ kind: 'fence', command: 'gh auth status' }, idle)).toBe(false);
-        expect(runsInSession({ kind: 'bang', command: 'docker run \\\n  --rm alpine' }, idle)).toBe(false);
-        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: 'running' })).toBe(false);
-        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: 'waitingForInput' })).toBe(false);
-        expect(runsInSession({ kind: 'bang', command: 'ls' }, { status: 'idle' })).toBe(false);
-        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, agent: 'codex' })).toBe(false);
+    it('sees the empty input box only when it is the last thing drawn', () => {
+        expect(promptReady(['⏺ Done.', RULE, '> ', RULE, '  ⏵⏵ accept edits on'].join('\n'))).toBe(true);
+        expect(promptReady([RULE, '❯', RULE, ''].join('\n'))).toBe(true);
+        expect(promptReady([RULE, '> half a draft', RULE].join('\n'))).toBe(false);
+        expect(promptReady([RULE, '> ', RULE, ' Do you want to proceed?', ' ❯ 1. Yes', RULE].join('\n'))).toBe(false);
+        expect(promptReady('⏺ Done.')).toBe(false);
+    });
+
+    it('runs a one-line ! command in a Claude session at its empty prompt and everything else in a new pane', () => {
+        const ready = [RULE, '> ', RULE].join('\n');
+        const idle = { agent: 'claude', agent_session_id: 'S', status: 'waitingForInput' };
+        expect(runsInSession({ kind: 'bang', command: 'gh auth status' }, idle, ready)).toBe(true);
+        expect(runsInSession({ kind: 'inline', command: 'gh auth status' }, { ...idle, status: 'idle' }, ready)).toBe(true);
+        expect(runsInSession({ kind: 'fence', command: 'gh auth status' }, idle, ready)).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'docker run \\\n  --rm alpine' }, idle, ready)).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: 'running' }, ready)).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, idle, 'Do you want to proceed?')).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { status: 'idle' }, ready)).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, agent: 'codex' }, ready)).toBe(false);
     });
 });

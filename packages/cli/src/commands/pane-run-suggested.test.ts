@@ -5,6 +5,7 @@ const state = vi.hoisted(() => ({
     sent: [] as Record<string, unknown>[],
     capture: '',
     statuses: [] as string[],
+    screens: [] as string[],
     answer: true
 }));
 vi.mock('../reply.js', async (original) => ({
@@ -13,7 +14,13 @@ vi.mock('../reply.js', async (original) => ({
         state.sent.push(payload);
         switch (payload['command']) {
             case 'pane-capture':
-                return Promise.resolve({ ok: true, pane_id: payload['target'] ?? SOURCE, workspace_id: 'W', text: state.capture });
+                // The first capture reads the suggestion; a later one of the source can show a new screen.
+                return Promise.resolve({
+                    ok: true,
+                    pane_id: payload['target'] ?? SOURCE,
+                    workspace_id: 'W',
+                    text: payload['scrollback'] === true ? state.capture : (state.screens.shift() ?? state.capture)
+                });
             case 'pane-list':
                 return Promise.resolve({
                     ok: true,
@@ -32,7 +39,9 @@ import { ExitError, resetIO, setIO } from '../io.js';
 import { handlePane } from './pane.js';
 
 const SOURCE = 'AAAAAAAA-0000-4000-8000-0000000000C1';
-const BANG = ['  Log in first:', '', '  ! aws sso login --profile', '  Serve-SuperAdmin-103639821168', '', '  Then retry.'].join('\n');
+const RULE = '─'.repeat(60);
+const BANG = ['  Log in first:', '', '  ! aws sso login --profile', '  Serve-SuperAdmin-103639821168', '', '  Then retry.', RULE, '> ', RULE].join('\n');
+const PERMISSION = [BANG, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', RULE].join('\n');
 const FENCE = ['Run these:', '```bash', 'echo one', 'echo two', '```'].join('\n');
 
 const run = (...args: string[]): Promise<void> => handlePane(['run-suggested', '--target', SOURCE, ...args]);
@@ -48,6 +57,7 @@ describe('kelpi pane run-suggested', () => {
     afterEach(() => {
         state.sent.length = 0;
         state.statuses.length = 0;
+        state.screens.length = 0;
         state.answer = true;
         resetIO();
     });
@@ -78,6 +88,18 @@ describe('kelpi pane run-suggested', () => {
     it('sends nothing when Claude starts working before the answer', async () => {
         state.capture = BANG;
         state.statuses.push('idle', 'running');
+        await expect(run()).rejects.toThrow(ExitError);
+        expect(sends()).toEqual([]);
+    });
+
+    it('never types into a permission prompt, before or after the answer', async () => {
+        state.capture = PERMISSION;
+        await run();
+        expect(sends()).toEqual([expect.objectContaining({ target: 'NEW' })]);
+
+        state.sent.length = 0;
+        state.capture = BANG;
+        state.screens.push(PERMISSION);
         await expect(run()).rejects.toThrow(ExitError);
         expect(sends()).toEqual([]);
     });

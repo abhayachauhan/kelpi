@@ -184,13 +184,27 @@ export interface SourcePane {
     readonly status?: string | undefined;
 }
 
+const PROMPT_EMPTY = /^\s*[>❯]\s*$/;
+
+/**
+ * True when the capture ends with Claude Code's input box empty: a bare `>` prompt between two rules.
+ * A permission prompt, a menu or a half-typed draft replaces it, and typing there would answer it.
+ */
+export function promptReady(capture: string): boolean {
+    const lines = capture.replace(/\r/g, '').split('\n');
+    const rules = lines.flatMap((line, index) => (RULE.test(line) ? [index] : []));
+    const below = rules.at(-1);
+    const above = rules.at(-2);
+    return below !== undefined && above === below - 2 && PROMPT_EMPTY.test(at(lines, below - 1));
+}
+
 /**
  * True when the command should be typed into the Claude session it came from: Claude wrote it with
  * `!` (meant for the user to run there), it is one line, and the pane is a live Claude session that
- * is idle (not mid-reply, not showing a permission prompt). Anything else runs in a new shell pane.
+ * is not mid-reply and shows its empty input box. Anything else runs in a new shell pane.
  */
-export function runsInSession(found: Suggested, pane: SourcePane): boolean {
+export function runsInSession(found: Suggested, pane: SourcePane, capture: string): boolean {
     const bang = found.kind === 'bang' || found.kind === 'inline';
-    const live = pane.agent === 'claude' && !!pane.agent_session_id && pane.status === 'idle';
-    return bang && !found.command.includes('\n') && live;
+    const live = pane.agent === 'claude' && !!pane.agent_session_id && pane.status !== 'running';
+    return bang && !found.command.includes('\n') && live && promptReady(capture);
 }
