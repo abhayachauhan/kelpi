@@ -2365,8 +2365,8 @@ How it decides (`packages/daemon/src/handlers/app/auto-approve.ts`):
   cursor on `1. Yes` (`@kelpi/core/agent` `parsePermissionPrompt`). Anything else is left.
 - **Never:** a command on the never-auto-approve list is left for the user, however it is
   quoted: `rm -r`, `git push`, `sudo`, a download piped into a shell or interpreter, a shell
-  or interpreter running inline code (`bash -c`, `python -c`, `node -e`), `kelpi
-  auto-approve` itself (so it cannot extend itself), `mkfs`,
+  or interpreter running inline code (`bash -lc`, `python -c`, `node -e`), any command that
+  mentions `auto-approve` (so it cannot extend itself), `mkfs`,
   `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`, `rsync
   --delete`, `gh pr merge`, `npm publish`, `kubectl` writes, `terraform apply`, `helm install`,
   `aws` writes, a variable as the command word, `alias` and `eval` (`NEVER_AUTO_APPROVE`).

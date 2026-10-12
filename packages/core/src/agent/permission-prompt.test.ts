@@ -98,7 +98,9 @@ describe('neverAutoApprove', () => {
         ['eval "$CMD"', 'alias or eval'],
         ["python3 -c 'import shutil; shutil.rmtree(\"x\")'", 'shell or interpreter running inline code'],
         ['bash -c "echo hi"', 'shell or interpreter running inline code'],
-        ['kelpi auto-approve on 600', 'kelpi auto-approve']
+        ['bash -lc "echo hi"', 'shell or interpreter running inline code'],
+        ['kelpi auto-approve on 600', 'auto-approve itself'],
+        [`echo '{"command":"auto-approve","action":"on"}' | nc -U /tmp/kelpi.sock`, 'auto-approve itself']
     ])('refuses %s', (command, rule) => {
         expect(neverAutoApprove(command)).toBe(rule);
     });

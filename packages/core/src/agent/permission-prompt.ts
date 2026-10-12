@@ -155,10 +155,15 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
     // `python -c '…'` hides its command from every rule below; so does `bash -c` with quotes in the way.
     {
         name: 'shell or interpreter running inline code',
-        test: (t) => t.some((x, i) => (SHELLS.has(base(x)) || INTERPRETERS.test(base(x))) && ['-c', '-e', '--eval'].includes(t[i + 1] ?? ''))
+        test: (t) =>
+            t.some(
+                (x, i) =>
+                    (SHELLS.has(base(x)) || INTERPRETERS.test(base(x))) &&
+                    t.slice(i + 1).some((f) => /^-[A-Za-z]*[ceE][A-Za-z]*$/.test(f) || ['--eval', '--print', '--command', 'eval'].includes(f))
+            )
     },
-    // Auto-approve must not be able to extend or restart itself.
-    { name: 'kelpi auto-approve', test: (t) => ['kelpi', 'kelpi.js', 'nex'].some((tool) => sub(t, tool, ['auto-approve'])) },
+    // Auto-approve must not be able to extend or restart itself, by the CLI or a raw socket write.
+    { name: 'auto-approve itself', test: (_t, all) => /auto-?approve/i.test(all) },
     { name: 'mkfs', test: (t) => t.some((x) => /^mkfs(?:\.|$)/.test(base(x))) },
     { name: 'dd of=', test: (t) => after(t, 'dd')?.some((f) => f.startsWith('of=')) ?? false },
     {
