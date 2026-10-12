@@ -15,6 +15,7 @@
  * ```
  */
 
+import { autoApproveHandlerEntries } from './auto-approve.js';
 import { eventHandlerEntries } from './events.js';
 import { fileHandlerEntries } from './files.js';
 import { graftHandlerEntries } from './graft.js';
@@ -39,6 +40,7 @@ export function createAppHandlers(options: AppHandlerOptions = {}): AppHandlerTa
         ...layoutHandlerEntries(deps),
         ...fileHandlerEntries(deps),
         ...eventHandlerEntries(deps),
+        ...autoApproveHandlerEntries(deps),
         ...graftHandlerEntries(deps),
         ...webHandlerEntries(deps),
         ...pingHandlerEntries(),

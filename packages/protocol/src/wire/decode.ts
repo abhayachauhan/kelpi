@@ -17,6 +17,7 @@
 
 import { createFieldAccess, validateWireFields, type WireFieldAccess } from './fields.js';
 import {
+    AUTO_APPROVE_MAX_MINUTES,
     EXPLICIT_CHAIN_COMMANDS,
     PANE_FONT_SIZE_MAX,
     PANE_FONT_SIZE_MIN,
@@ -526,6 +527,17 @@ function decodeCommand(
             return { command };
         case 'restart-old-terminals':
             return { command };
+        case 'auto-approve': {
+            const action = fields.text('action');
+            if (action !== 'on' && action !== 'off' && action !== 'status') {
+                return guard(command, "auto-approve action must be 'on', 'off' or 'status'", 'action');
+            }
+            const minutes = fields.int('minutes');
+            if (minutes !== undefined && (action !== 'on' || minutes < 1 || minutes > AUTO_APPROVE_MAX_MINUTES)) {
+                return guard(command, `auto-approve minutes must be 1-${String(AUTO_APPROVE_MAX_MINUTES)}, with action 'on'`, 'minutes');
+            }
+            return { command, action, minutes };
+        }
 
         // ── 6.9 web pane commands ────────────────────────────────────────────────────
         case 'web-open': {

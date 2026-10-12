@@ -2216,7 +2216,7 @@ Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
 `workspace-delete`, `workspace-label`, `workspace-mute`, `workspace-rename`,
 `workspace-icon`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
-`graft-start`, `graft-stop`, `graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
+`graft-start`, `graft-stop`, `graft-status`, `auto-approve`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
 `web-tab-select`, `web-console` (streaming with `follow:true`), `web-inspect`,
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
@@ -2330,6 +2330,46 @@ state keep working; each explains why the code does something that would otherwi
     real deadlock at >16KB of child output; `packages/cli/src/proc.ts` uses
     `child_process.execFile`, which drains stdout and stderr concurrently, and any
     replacement must do the same.
+
+---
+
+## 21. `kelpi auto-approve`
+
+```
+kelpi auto-approve on [minutes] [--json]
+kelpi auto-approve off [--json]
+kelpi auto-approve status [--json]
+```
+
+For unattended runs: the daemon answers "Yes" to Claude Code permission prompts ("Do you want
+to proceed? ❯ 1. Yes") in every Claude pane, in every workspace, until the time runs out.
+
+- `on` turns it on for `minutes` (default 10, at most 10080, a week) and restarts the counts.
+  It checks every Claude pane once straight away, for prompts already open.
+- `off` stops it now. `status` changes nothing.
+- Each prints the state after it:
+  `Auto-approve is on until 14:32. 3 approved, 1 left for you.`, then one line per prompt left
+  for the user: `  <pane-id>: never auto-approved: rm -r: rm -rf /tmp/x`. `--json` prints the
+  daemon's reply (`wire-protocol.md` §6.8.2).
+- A bad minutes value => `Minutes must be a whole number from 1 to 10080`, exit 1. Missing or
+  unknown action => usage on stderr, exit 1. Request/response, needs no `KELPI_PANE_ID`.
+
+How it decides (`packages/daemon/src/handlers/app/auto-approve.ts`):
+
+- **When:** on Claude's `Notification` hook (`kelpi event notification`, agent-lifecycle.md
+  §5.3), which fires as a permission prompt opens. No polling. When the pane shows no prompt
+  yet, it reads again after 0.25, 1 and 3 seconds.
+- **Which panes:** shell panes whose agent is Claude (`agentKind`, or a session id).
+- **What:** only a prompt in the exact shape Claude draws, at the bottom of the screen, with the
+  cursor on `1. Yes` (`@kelpi/core/agent` `parsePermissionPrompt`). Anything else is left.
+- **Never:** a command on the never-auto-approve list is left for the user, however it is
+  quoted: `rm -r`, `git push`, `sudo`, a download piped into a shell or interpreter, `mkfs`,
+  `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`, `rsync
+  --delete`, `gh pr merge`, `npm publish`, `kubectl` writes, `terraform apply`, `helm install`,
+  `aws` writes, a variable as the command word, `alias` and `eval` (`NEVER_AUTO_APPROVE`).
+- **Before the key:** the pane is read a second time and must show the same prompt; only then
+  is Enter sent. The same prompt is not sent Enter again within 15 seconds.
+- **Expiry:** checked before every key. Nothing is persisted: a daemon restart turns it off.
 
 ---
 

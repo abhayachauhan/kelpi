@@ -488,6 +488,19 @@ export interface RestartOldTerminalsMessage {
     command: 'restart-old-terminals';
 }
 
+export const AUTO_APPROVE_DEFAULT_MINUTES = 10;
+export const AUTO_APPROVE_MAX_MINUTES = 7 * 24 * 60;
+
+/**
+ * Answer "Yes" to Claude Code permission prompts in every Claude pane for `minutes` (default 10),
+ * turn that off, or report it. Every action replies `{ on, until, approved, left }`.
+ */
+export interface AutoApproveMessage {
+    command: 'auto-approve';
+    action: 'on' | 'off' | 'status';
+    minutes?: number | undefined;
+}
+
 // ── 6.9 Web pane commands ───────────────────────────────────────────────────────────
 
 export interface WebOpenMessage {
@@ -769,6 +782,7 @@ export type WireMessage =
     | GraftStatusMessage
     | PingMessage
     | RestartOldTerminalsMessage
+    | AutoApproveMessage
     | WebOpenMessage
     | WebNavigateMessage
     | WebUrlMessage
@@ -836,6 +850,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'graft-status',
     'ping',
     'restart-old-terminals',
+    'auto-approve',
     'pane-sync',
     'pane-sync-exclude',
     'pane-send-key',

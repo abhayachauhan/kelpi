@@ -752,6 +752,16 @@ describe('layout, file and graft commands', () => {
         expect(ok({ command: 'graft-status' })).toEqual({ command: 'graft-status' });
         expect(ok({ command: 'ping' })).toEqual({ command: 'ping' });
     });
+
+    it('decodes auto-approve without a pane, and guards its action and minutes', () => {
+        expect(ok({ command: 'auto-approve', action: 'on', minutes: 30 })).toEqual({ command: 'auto-approve', action: 'on', minutes: 30 });
+        expect(ok({ command: 'auto-approve', action: 'status' })).toEqual({ command: 'auto-approve', action: 'status', minutes: undefined });
+        expect(rejected({ command: 'auto-approve' }).field).toBe('action');
+        expect(rejected({ command: 'auto-approve', action: 'maybe' }).field).toBe('action');
+        expect(rejected({ command: 'auto-approve', action: 'on', minutes: 0 }).field).toBe('minutes');
+        expect(rejected({ command: 'auto-approve', action: 'on', minutes: 7 * 24 * 60 + 1 }).field).toBe('minutes');
+        expect(rejected({ command: 'auto-approve', action: 'off', minutes: 5 }).field).toBe('minutes');
+    });
 });
 
 describe('web pane commands', () => {

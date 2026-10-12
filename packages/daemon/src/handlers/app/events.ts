@@ -56,6 +56,8 @@ export function applyAgentEvent(
         now,
         workspaceID: workspace.id
     });
+    // Claude's Notification hook fires as a permission prompt opens: the one moment auto-approve looks.
+    if (event.type === 'notification') deps.autoApprover.onNotification(paneID, ctx);
     if (preview === null) return;
     const { effects } = preview;
 

@@ -34,6 +34,7 @@ import {
 } from '../../git/index.js';
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
+import { createAutoApprover, type AutoApprover } from './auto-approve.js';
 
 export type AppContext = HandlerContext<DaemonState, DomainAction, DomainEvent>;
 export type AppHandler = CommandHandler<AppContext>;
@@ -183,6 +184,8 @@ export interface AppDeps {
     readonly isAppActive: () => boolean;
     readonly isPaneFocused: ((paneID: string, workspaceID: string) => boolean) | null;
     readonly agentEventsMuted: (paneID: string) => boolean;
+    /** `auto-approve`'s state, fed by the `notification` hook (`./auto-approve.ts`). */
+    readonly autoApprover: AutoApprover;
 }
 
 const noop = (): void => {};
@@ -192,6 +195,7 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
     const cols = options.defaultCols ?? 80;
     const rows = options.defaultRows ?? 24;
     const git = options.git ?? createGitService();
+    const now = options.now ?? (() => Date.now());
     return {
         git,
         worktrees: guardedCreator(
@@ -205,7 +209,7 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         // every browser-bound verb honestly.
         webPanes: options.webPanes ?? createWebPaneService(),
         uuid: options.uuid ?? (() => newUUID()),
-        now: options.now ?? (() => Date.now()),
+        now,
         random: options.random ?? (() => Math.random()),
         // Getters, so a settings change is visible to the very next command without rebuilding
         // the handler table. A plain string/enum still works — it is just a constant getter.
@@ -248,7 +252,8 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         scrollTarget: options.scrollTarget ?? noop,
         isAppActive: options.isAppActive ?? (() => false),
         isPaneFocused: options.isPaneFocused ?? null,
-        agentEventsMuted: options.agentEventsMuted ?? (() => false)
+        agentEventsMuted: options.agentEventsMuted ?? (() => false),
+        autoApprover: createAutoApprover({ now })
     };
 }
 

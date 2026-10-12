@@ -264,7 +264,7 @@ Every request carries `"command": "<verb>"`. Parsing happens in three stages:
    `group-create`, `group-rename`, `group-delete`, `group-move`, `group-set-repo`,
    `group-reorder`, `group-sort`, `open`, `diff`,
    `pane-close`, `pane-list`, `pane-capture`, `graft-start`, `graft-stop`,
-   `graft-status`, `ping`, `restart-old-terminals`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
+   `graft-status`, `ping`, `restart-old-terminals`, `auto-approve`, all `web-*` commands, `pane-sync`, `pane-sync-exclude`,
    `pane-send-key`, `pane-send`, `pane-split`, `pane-create`, `pane-name`, `pane-resize`,
    `pane-font-size`, `pane-clear`, `pane-move-adjacent`.
    These are all parsed **before** the mandatory-`pane_id` guard, which is why
@@ -318,7 +318,7 @@ workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-r
 workspace-icon,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
-ping, restart-old-terminals,
+ping, restart-old-terminals, auto-approve,
 web-open, web-navigate, web-url, web-back, web-forward, web-reload, web-capture,
 web-tabs, web-tab-new, web-tab-close, web-tab-select,
 web-console, web-inspect, web-inspect-result,
@@ -514,6 +514,7 @@ carry `"command"`.
 | `graft-status` | R/R | — | — |
 | `ping` | R/R | — | — |
 | `restart-old-terminals` | R/R | — | — |
+| `auto-approve` | R/R | `action` | `minutes` |
 | `plugin` | R/R | — | `action`, `text` (JSON object encoded as a string; see [plugins](plugins.md)) |
 | `web-open` | R/R | `url` (non-empty) | `pane_id`, `private`, `target`, `direction`, `focus`, `gesture` |
 | `web-navigate` | R/R | pane-target*; `url` (non-empty) | `gesture`, `typed` |
@@ -1500,6 +1501,20 @@ nothing draining, or no terminal host at all, it is `{"ok":true,"panes":0,"resum
 replies after the old host has exited and the resumes are typed, a few seconds; a second request
 meanwhile joins the first. A daemon that is stopping answers `{"ok":false,"error":…}`.
 
+### 6.8.2 `auto-approve` (R/R)
+
+Answer "Yes" to Claude Code permission prompts in every Claude pane for a while (`cli.md` §21).
+`action` is `on`, `off` or `status`; `minutes` (1-10080, default 10) goes with `on` only. Every
+action replies with the state after it:
+
+```json
+{"command":"auto-approve","action":"on","minutes":30}
+→ {"ok":true,"on":true,"until":"2026-10-13T05:00:00.000Z","approved":0,"left":[]}
+```
+
+`left` lists the prompts left for the user while on, each `{pane_id, command, reason}`. `on`
+again restarts the clock and the counts. Nothing is persisted: a daemon restart turns it off.
+
 `kelpid status` and the daemon's own startup probe parse these blocks
 (`packages/daemon/src/control/probe.ts:20-108`).
 
@@ -1662,7 +1677,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `value_or_label` | string | `web-select` |
 | `block`, `behavior` | string | `web-scroll` |
 | `script` | string | `web-exec` |
-| `action` | string | `pane-sync` |
+| `action` | string | `pane-sync`, `auto-approve` |
 | `excluded` | bool | `pane-sync-exclude` |
 | `muted` | bool | `workspace-create`, `workspace-mute` |
 | `icon` | string | `workspace-create`, `workspace-icon` |
@@ -1683,6 +1698,7 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295) |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |
+| `minutes` | int | `auto-approve` (1-10080, `on` only; absent = 10) |
 
 ---
 

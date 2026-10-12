@@ -35,4 +35,6 @@ export {
 } from './session.js';
 export type { ResumeTuple, WorkspaceAgentSummary } from './session.js';
 export { notificationDecision } from './notifications.js';
+export { NEVER_AUTO_APPROVE, neverAutoApprove, parsePermissionPrompt } from './permission-prompt.js';
+export type { PermissionPrompt } from './permission-prompt.js';
 export type { NotificationContext, NotificationDecision } from './notifications.js';

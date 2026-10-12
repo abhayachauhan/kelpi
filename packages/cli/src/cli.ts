@@ -13,6 +13,7 @@ import { handleDocument } from './commands/document.js';
 import { isHelpToken } from './args.js';
 import { setEnv } from './env.js';
 import { exit, printLine, writeErr } from './io.js';
+import { handleAutoApprove } from './commands/auto-approve.js';
 import { handleDaemon } from './commands/daemon.js';
 import { handleDoctor } from './commands/doctor.js';
 import { handleEvent } from './commands/event.js';
@@ -84,6 +85,8 @@ export async function run(argv: readonly string[], environment: NodeJS.ProcessEn
             return handleDaemon(args);
         case 'install-hooks':
             return handleInstallHooks(args);
+        case 'auto-approve':
+            return handleAutoApprove(args);
         default:
             writeErr(`Unknown command: ${subcommand}\n`);
             writeErr(globalUsage);
