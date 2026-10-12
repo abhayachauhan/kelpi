@@ -23,10 +23,12 @@ import {
     parseDouble,
     rejectLeftoverArgs
 } from '../args.js';
+import { confirm } from '../confirm.js';
 import { homeDirectory, originPaneID, requirePaneID } from '../env.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asBool, asNumber, asString, stableStringify, type JsonObject } from '../json.js';
 import { decodeReply, parseReplyOrExit } from '../reply.js';
+import { commandProblem, findSuggested, runsInSession, SUGGESTED_CAPTURE_LINES, type SourcePane } from '../suggested.js';
 import { printPaneTable, replyArray } from '../table.js';
 import { printTransportFailure, sendJSON, sendJSONAndReadReply } from '../transport.js';
 import {
@@ -37,6 +39,7 @@ import {
     paneMoveUsage,
     paneNameUsage,
     paneResizeUsage,
+    paneRunSuggestedUsage,
     paneSendUsage,
     paneSplitUsage,
     paneSyncUsage
@@ -82,7 +85,7 @@ async function readReplyOrEmptyError(payload: JsonObject, command: string): Prom
 export async function handlePane(args: string[]): Promise<void> {
     const action = args.shift();
     if (action === undefined) {
-        errLine('Usage: kelpi pane split|create|close|name|send|send-key|move|list|capture|sync|id [...]');
+        errLine('Usage: kelpi pane split|create|close|name|send|send-key|move|list|capture|run-suggested|sync|id [...]');
         exit(1);
     }
 
@@ -111,12 +114,14 @@ export async function handlePane(args: string[]): Promise<void> {
             return handlePaneList(args);
         case 'capture':
             return handlePaneCapture(args);
+        case 'run-suggested':
+            return handlePaneRunSuggested(args);
         case 'sync':
             return handlePaneSync(args);
         default:
             errLine(`Unknown pane action: ${action}`);
             errLine(
-                'Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, list, capture, sync, id'
+                'Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, list, capture, run-suggested, sync, id'
             );
             exit(1);
     }
@@ -597,6 +602,99 @@ async function handlePaneCapture(args: string[]): Promise<void> {
     const reply = await decodeReply(payload, 'kelpi pane capture');
     // Raw bytes, no added trailing newline — captured output usually ends in one already.
     writeOut(asString(reply['text']) ?? '');
+}
+
+const RUN_SUGGESTED = 'kelpi pane run-suggested';
+
+/** The pane's `pane-list` entry, read fresh so the idle check sees the state at that moment. */
+async function listedPane(paneID: string, workspaceID: string): Promise<SourcePane & { working_directory?: string | undefined }> {
+    const reply = await decodeReply({ command: 'pane-list', workspace: workspaceID }, RUN_SUGGESTED);
+    const entry = replyArray(reply, 'panes').find((pane) => asString(pane['id']) === paneID);
+    if (entry === undefined) {
+        errLine(`${RUN_SUGGESTED}: pane ${paneID} is gone`);
+        exit(1);
+    }
+    return {
+        agent: asString(entry['agent']),
+        agent_session_id: asString(entry['agent_session_id']),
+        status: asString(entry['status']),
+        working_directory: asString(entry['working_directory'])
+    };
+}
+
+/**
+ * Find the last command Claude suggested in a pane (cli.md §9.12.1), show it, and run it once the
+ * user confirms: as `! <command>` in that Claude session when it is idle, else in a new shell pane.
+ */
+async function handlePaneRunSuggested(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(paneRunSuggestedUsage);
+        exit(0);
+    }
+    const target = parseFlag('--target', args);
+    const workspace = parseFlag('--workspace', args);
+    const printOnly = popSwitch('--print', args);
+    rejectLeftoverArgs(args, RUN_SUGGESTED, {
+        positionalHint: 'target panes with --target <name-or-uuid>',
+        usage: (write) => write(paneRunSuggestedUsage)
+    });
+
+    const payload: JsonObject = { command: 'pane-capture', lines: SUGGESTED_CAPTURE_LINES, scrollback: true };
+    if (target !== null) {
+        payload['target'] = target;
+        const origin = originPaneID();
+        if (origin !== undefined) payload['pane_id'] = origin;
+    } else {
+        payload['pane_id'] = requirePaneID();
+    }
+    if (workspace !== null) payload['workspace'] = workspace;
+    const captured = await decodeReply(payload, RUN_SUGGESTED);
+
+    const found = findSuggested(asString(captured['text']) ?? '');
+    if (found === null) {
+        errLine(`${RUN_SUGGESTED}: no suggested command found in the pane`);
+        exit(1);
+    }
+    const problem = commandProblem(found.command);
+    if (problem !== null) {
+        errLine(`${RUN_SUGGESTED}: not running it: ${problem}`);
+        exit(1);
+    }
+    printLine(found.command);
+    if (printOnly) return;
+
+    const paneID = asString(captured['pane_id']) ?? '?';
+    const workspaceID = asString(captured['workspace_id']) ?? '';
+    const source = await listedPane(paneID, workspaceID);
+    const inSession = runsInSession(found, source);
+    const where = inSession ? `in this Claude session as "! ${found.command}"` : 'in a new shell pane';
+    if (!(await confirm(`Run it ${where}?`))) {
+        errLine(`${RUN_SUGGESTED}: not run`);
+        exit(1);
+    }
+
+    if (inSession) {
+        // Claude may have started working while the user read the prompt; never type into a busy session.
+        if (!runsInSession(found, await listedPane(paneID, workspaceID))) {
+            errLine(`${RUN_SUGGESTED}: Claude is no longer idle in pane ${paneID}; not run`);
+            exit(1);
+        }
+        await decodeReply({ command: 'pane-send', target: paneID, text: `! ${found.command}`, bare: false }, RUN_SUGGESTED);
+        printLine(`ran in ${paneID}`);
+        return;
+    }
+
+    const split: JsonObject = { command: 'pane-split', target: paneID, focus: true };
+    if (source.working_directory !== undefined) split['path'] = source.working_directory;
+    const made = asString((await decodeReply(split, RUN_SUGGESTED))['pane_id']);
+    if (made === undefined) {
+        errLine(`${RUN_SUGGESTED}: the new pane has no id`);
+        exit(1);
+    }
+    // A new pane's shell starts when a client reports its size; a capture starts it now, so the send isn't dropped.
+    await decodeReply({ command: 'pane-capture', target: made, lines: 1 }, RUN_SUGGESTED);
+    await decodeReply({ command: 'pane-send', target: made, text: found.command, bare: false }, RUN_SUGGESTED);
+    printLine(`ran in new pane ${made}`);
 }
 
 async function handlePaneSync(args: string[]): Promise<void> {

@@ -28,6 +28,7 @@ export const globalUsage = `Usage:
   kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
   kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
   kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+  kelpi pane run-suggested [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--print]
   kelpi pane sync (on|off|toggle|status) [--workspace <name-or-uuid>] [--json]
   kelpi pane sync exclude --target <name-or-uuid> [--workspace <name-or-uuid>]
   kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>]
@@ -302,6 +303,27 @@ Options:
 The target is flag-only: a bare positional argument is rejected on purpose so
 \`kelpi pane capture <uuid>\` can't silently fall back to capturing the caller.
 Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const paneRunSuggestedUsage = `Usage:
+  kelpi pane run-suggested [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--print]
+
+Finds the last command Claude suggested in a pane (a "! command" line, one inside
+a sentence, or a code block), rejoins the lines Claude wrapped, prints it, and
+runs it after you answer y. A one-line "! command" runs in that Claude session,
+typed as "! command", when Claude is idle. Anything else, including any
+multi-line command, runs in a new shell pane next to it. Without --target, reads
+the calling pane (requires KELPI_PANE_ID).
+
+Options:
+  --target <name-or-uuid>     Pane to read (UUID = global, label needs scope).
+  --workspace <name-or-uuid>  Scope label resolution to a specific workspace.
+  --print                     Print the command only; never run it.
+  -h, --help                  Show this help.
+
+Exit codes: 0 when printed or run, 1 when nothing was found, the answer was not
+y, or the command was refused.
 
 `;
 

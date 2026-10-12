@@ -1,0 +1,126 @@
+import { describe, expect, it } from 'vitest';
+
+import { commandProblem, findSuggested, joinWraps, runsInSession, wrapWidth } from './suggested.js';
+
+const RULE = '─'.repeat(60);
+
+describe('findSuggested', () => {
+    it('rejoins a wrapped ! line and drops the ! prefix', () => {
+        const capture = [
+            "! ssh root@192.168.7.253 'DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -o",
+            "  Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef'"
+        ].join('\n');
+        expect(findSuggested(capture)).toEqual({
+            kind: 'bang',
+            command:
+                "ssh root@192.168.7.253 'DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef'"
+        });
+    });
+
+    it("rejoins a ! line under Claude's bullet at its indent plus two", () => {
+        const capture = ['⏺ Run this yourself:', '', '  ! npm run build --workspace', '    packages/client', '', '  Then reload.'];
+        expect(findSuggested(capture.join('\n'))?.command).toBe('npm run build --workspace packages/client');
+    });
+
+    it("rejoins a ! line whose wrap returns to the ! column in Claude's reply text", () => {
+        const capture = [
+            '  Log in first:',
+            '',
+            '  ! aws sso login --profile',
+            '  Serve-SuperAdmin-103639821168',
+            '',
+            '  Then tell me when it is done.'
+        ];
+        expect(findSuggested(capture.join('\n'))).toEqual({
+            kind: 'bang',
+            command: 'aws sso login --profile Serve-SuperAdmin-103639821168'
+        });
+    });
+
+    it('treats a second ! line at the same column as its own command', () => {
+        expect(findSuggested(['  ! git status', '  ! git log -1'].join('\n'))?.command).toBe('git log -1');
+    });
+
+    it('finds a ! command inside a sentence and cuts it at the sentence end', () => {
+        const capture = [
+            '  Next',
+            "  - Log in again with ! aws sso login --profile Meandu-Management-562691664125. I'll confirm the role is missing, then plan.",
+            '    The plan should show only the new role being added.',
+            '',
+            RULE
+        ];
+        expect(findSuggested(capture.join('\n'))).toEqual({
+            kind: 'inline',
+            command: 'aws sso login --profile Meandu-Management-562691664125'
+        });
+        expect(findSuggested('  Run ! gh auth status then retry.')?.command).toBe('gh auth status');
+        expect(findSuggested('  Run `! gh auth status` then retry.')?.command).toBe('gh auth status');
+        expect(findSuggested('  Run ! git status, then tell me.')?.command).toBe('git status');
+        expect(findSuggested('  Wow! git is great')).toBeNull();
+    });
+
+    it('joins a URL split mid-token at the wrap width with nothing, and with a space when the width is unknown', () => {
+        const first = '  ! curl -fsSL https://example.com/releases/download/v1.2.3/ins';
+        const wide = '─'.repeat(64);
+        expect(findSuggested([first, '    tall.sh | bash', '', wide, '> ', wide].join('\n'))?.command).toBe(
+            'curl -fsSL https://example.com/releases/download/v1.2.3/install.sh | bash'
+        );
+        expect(findSuggested([first, '    tall.sh | bash'].join('\n'))?.command).toBe(
+            'curl -fsSL https://example.com/releases/download/v1.2.3/ins tall.sh | bash'
+        );
+    });
+
+    it('keeps each line of a fenced block and rejoins wraps inside it', () => {
+        const capture = ['Run these:', '```bash', 'cd ~/repos/app', 'npm ci --no-audit --loglevel', '  error', 'npm test', '```', 'Done.'];
+        expect(findSuggested(capture.join('\n'))).toEqual({
+            kind: 'fence',
+            command: 'cd ~/repos/app\nnpm ci --no-audit --loglevel error\nnpm test'
+        });
+    });
+
+    it('finds an indented command after "Run ..." text and a shell-like bare paragraph', () => {
+        const run = ['⏺ Run the migration:', '', '    npx prisma migrate deploy', '', '  It is safe to re-run.'];
+        expect(findSuggested(run.join('\n'))).toEqual({ kind: 'run', command: 'npx prisma migrate deploy' });
+        expect(findSuggested('  gh pr view 12 --json state\n')).toEqual({ kind: 'bare', command: 'gh pr view 12 --json state' });
+        expect(findSuggested('  git is how we ship changes, and make builds them.\n')).toBeNull();
+    });
+
+    it('returns the last suggestion and nothing for prose or an unclosed fence', () => {
+        expect(findSuggested(['! echo first', '```sh', 'echo second', '```', '  ! echo third', 'prose'].join('\n'))?.command).toBe('echo third');
+        expect(findSuggested('⏺ All tests pass.\n  Nothing to run.')).toBeNull();
+        expect(findSuggested('```bash\nnpm test')).toBeNull();
+        expect(findSuggested('```python\nprint(1)\n```')).toBeNull();
+    });
+});
+
+describe('suggested helpers', () => {
+    it('keeps the real newline after a shell backslash', () => {
+        expect(joinWraps(['docker run \\', '  --rm alpine'], 0)).toBe('docker run \\\n  --rm alpine');
+    });
+
+    it('reads the wrap width from the widest rule line', () => {
+        expect(wrapWidth(['abc', RULE, '─'.repeat(30)])).toBe(60);
+        expect(wrapWidth(['abc'])).toBe(0);
+    });
+
+    it('refuses empty text, control characters and invisible formatting characters', () => {
+        expect(commandProblem('echo a\necho b')).toBeNull();
+        expect(commandProblem('  ')).toMatch(/empty/);
+        expect(commandProblem('echo \u001b[31m')).toMatch(/control/);
+        expect(commandProblem('rm x\r')).toMatch(/control/);
+        expect(commandProblem('echo safe ‮;hs.live')).toMatch(/invisible/);
+        expect(commandProblem('rm​ -rf x')).toMatch(/invisible/);
+    });
+
+    it('runs a one-line ! command in an idle Claude session and everything else in a new pane', () => {
+        const idle = { agent: 'claude', agent_session_id: 'S', status: 'idle' };
+        expect(runsInSession({ kind: 'bang', command: 'gh auth status' }, idle)).toBe(true);
+        expect(runsInSession({ kind: 'inline', command: 'gh auth status' }, idle)).toBe(true);
+        expect(runsInSession({ kind: 'fence', command: 'gh auth status' }, idle)).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'docker run \\\n  --rm alpine' }, idle)).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: 'running' })).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, status: 'waitingForInput' })).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { status: 'idle' })).toBe(false);
+        expect(runsInSession({ kind: 'bang', command: 'ls' }, { ...idle, agent: 'codex' })).toBe(false);
+    });
+});

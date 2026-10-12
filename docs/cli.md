@@ -530,9 +530,9 @@ The command label used for warning attribution is `kelpi event <type>`.
 ## 9. `kelpi pane`
 
 Dispatcher: `kelpi pane <action>`; missing action prints
-`Usage: kelpi pane split|create|close|name|send|send-key|move|list|capture|sync|id [...]` to
+`Usage: kelpi pane split|create|close|name|send|send-key|move|list|capture|run-suggested|sync|id [...]` to
 stderr, exit 1. Unknown action prints `Unknown pane action: <x>` +
-`Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, list, capture, sync, id`,
+`Valid actions: split, create, close, name, send, send-key, move, move-to-workspace, list, capture, run-suggested, sync, id`,
 exit 1.
 
 ### 9.0 Target resolution model (server-side contract, referenced everywhere)
@@ -852,6 +852,45 @@ kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lin
 - Server contract: without `--scrollback` reads the visible viewport; with it, the full
   screen+scrollback. Non-terminal panes (markdown/scratchpad/diff) are refused with a
   typed `ok:false` error. `--lines N` limits to the last N lines.
+
+#### 9.12.1 `kelpi pane run-suggested`
+
+```
+kelpi pane run-suggested [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--print]
+```
+
+Runs the command Claude Code last suggested in a pane, so the user doesn't copy it by hand
+across Claude's line wraps. Built CLI-side from existing socket commands only; the daemon has
+no new handler.
+
+- Help to stdout, exit 0. Leftovers rejected with the `capture` hint. Target resolution is
+  exactly `pane capture`'s (no `--target` => `requirePaneID()`, silent exit 0 outside).
+- Reads `pane-capture` with `lines: 200, scrollback: true`, then finds the **last** suggestion
+  (`packages/cli/src/suggested.ts`): a `! <cmd>` line, a `! <cmd>` inside a sentence (cut at the
+  sentence end, a closing backtick or a following "then"), a `bash`/`sh` fenced block, an indented
+  command after a line starting "Run", or a shell-looking paragraph starting with a common CLI.
+  Claude Code's wraps (a newline plus the block's indent and two more spaces, or back at the `!`
+  column) are rejoined with a space, or with nothing when the line filled the width read from
+  Claude's full-width input rule and the halves form one long word. A fenced block keeps one
+  command per line, and a line ending in `\` keeps its newline.
+- Nothing found: `kelpi pane run-suggested: no suggested command found in the pane`, exit 1.
+  A command with a control character (other than newline) or an invisible format character
+  (`\p{Cf}`: bidi overrides, zero-width) is refused with `not running it: <why>`, exit 1, and
+  never printed.
+- The command goes to stdout. `--print` stops there, exit 0.
+- Otherwise the CLI asks on stderr, `Run it in this Claude session as "! <cmd>"? [y/N]` or
+  `Run it in a new shell pane? [y/N]`, and reads one line of stdin. Only `y`/`yes` runs it; any
+  other answer or EOF prints `not run`, exit 1.
+- **In the session** only when all hold: the suggestion was a `!` line or an inline `!`, it is
+  one line, and the source pane's `pane-list` entry has `agent: "claude"`, an
+  `agent_session_id` and `status: "idle"` (so never mid-reply or at a permission prompt). The
+  entry is re-read after the answer; if Claude is no longer idle, `not run`, exit 1. Sends
+  `pane-send` with `text: "! <cmd>"`; Claude Code runs it and the output lands in the session.
+  Ack `ran in <pane-id>`.
+- **Otherwise** a new shell pane: `pane-split` next to the source pane with `focus: true` and
+  `path` = the source's `working_directory`, a one-line `pane-capture` of the new pane (which
+  starts its shell now, so the send is not dropped), then `pane-send` of the command. A
+  multi-line command never goes to a Claude session. Ack `ran in new pane <pane-id>`.
 
 ### 9.13 `kelpi pane sync` (issue #121)
 
