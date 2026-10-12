@@ -99,6 +99,9 @@ describe('neverAutoApprove', () => {
         ["python3 -c 'import shutil; shutil.rmtree(\"x\")'", 'shell or interpreter running inline code'],
         ['bash -c "echo hi"', 'shell or interpreter running inline code'],
         ['bash -lc "echo hi"', 'shell or interpreter running inline code'],
+        ['echo cm0gLXJmIH4= | base64 -d | sh', 'piped or heredoc into a shell or interpreter'],
+        ["printf 'echo hi' | bash",'piped or heredoc into a shell or interpreter'],
+        ["python3 <<'EOF'\nimport os\nEOF", 'piped or heredoc into a shell or interpreter'],
         ['kelpi auto-approve on 600', 'auto-approve itself'],
         [`kelpi auto-"a"pp\\rove on`, 'auto-approve itself'],
         [`echo '{"command":"auto-approve","action":"on"}' | nc -U /tmp/kelpi.sock`, 'auto-approve itself']
@@ -110,7 +113,7 @@ describe('neverAutoApprove', () => {
         expect(neverAutoApprove('git pu\nsh origin main')).toBe('git push');
     });
 
-    it.each(['git status', 'ls -la', 'npm test', 'mv a b', 'echo $HOME', 'rm file.txt', 'git log --oneline', 'curl -o out https://x'])(
+    it.each(['git status', 'ls -la', 'npm test', 'mv a b', 'echo $HOME', 'rm file.txt', 'git log --oneline', 'curl -o out https://x', 'python3 scripts/check.py', 'bash ./build.sh'])(
         'lets %s through',
         (command) => {
             expect(neverAutoApprove(command)).toBeNull();

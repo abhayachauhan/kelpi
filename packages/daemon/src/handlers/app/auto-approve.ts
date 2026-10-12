@@ -23,6 +23,12 @@ import { ok, type AppContext, type AppDeps, type AppHandler } from './context.js
 export const AUTO_APPROVE_RETRY_MS: readonly number[] = [250, 1000, 3000];
 /** A prompt still showing this soon after its Enter did not take the key, and is not sent another. */
 export const SAME_PROMPT_GRACE_MS = 15_000;
+/** The two reads before a key are this far apart, so a prompt still being redrawn shows as changed. */
+export const SECOND_READ_DELAY_MS = 100;
+/** `status` keeps the latest prompts left for the user, not all of a week-long run. */
+export const LEFT_CAP = 100;
+/** Outcomes the retry delays read again: the prompt may not be drawn, or be half-drawn, yet. */
+const RETRIED: ReadonlySet<AutoApproveOutcome> = new Set(['no-prompt', 'busy', 'unrecognised', 'changed']);
 
 export type AutoApproveOutcome =
     | 'approved'
@@ -55,15 +61,16 @@ export interface AutoApprover {
     turnOn(minutes: number, ctx: AppContext): void;
     turnOff(): void;
     status(): AutoApproveStatus;
-    /** One check of one pane: read, decide, read again, Enter. */
-    check(paneID: string, ctx: AppContext): Promise<AutoApproveOutcome>;
-    /** The `notification` hook's entry: `check`, re-read on the retry delays while no prompt shows or the pane is busy. */
+    /** One check of one pane: read, decide, read again, Enter. `final: false` does not record an unrecognised prompt. */
+    check(paneID: string, ctx: AppContext, final?: boolean): Promise<AutoApproveOutcome>;
+    /** The `notification` hook's entry: a new prompt, so `check`, re-read on the retry delays while it is not ready. */
     onNotification(paneID: string, ctx: AppContext): void;
 }
 
 export interface AutoApproverDeps {
     readonly now: () => number;
     readonly schedule?: ((run: () => void, ms: number) => void) | undefined;
+    readonly secondReadDelayMs?: number | undefined;
 }
 
 /** A shell pane with a live Claude session: SessionEnd clears the id, so a pane Claude has left does not pass. */
@@ -90,6 +97,7 @@ const defaultSchedule = (run: () => void, ms: number): void => {
 
 export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
     const schedule = deps.schedule ?? defaultSchedule;
+    const secondReadDelay = deps.secondReadDelayMs ?? SECOND_READ_DELAY_MS;
     let until: number | null = null;
     let approved = 0;
     let left: LeftPrompt[] = [];
@@ -108,15 +116,16 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
         if (leftKeys.has(key)) return;
         leftKeys.add(key);
         left.push({ paneID, command, reason });
+        if (left.length > LEFT_CAP) left.splice(0, left.length - LEFT_CAP);
     };
 
-    const decide = async (paneID: string, ctx: AppContext): Promise<AutoApproveOutcome> => {
+    const decide = async (paneID: string, ctx: AppContext, final: boolean): Promise<AutoApproveOutcome> => {
         const started = generation;
         const first = await readScreen(ctx, paneID);
         const prompt = first === null ? null : parsePermissionPrompt(first);
         if (prompt === null) return 'no-prompt';
         if (!prompt.approvable) {
-            leave(paneID, prompt.block, '', 'prompt not recognised');
+            if (final) leave(paneID, prompt.block, '', 'prompt not recognised');
             return 'unrecognised';
         }
         const rule = neverAutoApprove(prompt.command);
@@ -126,7 +135,8 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
         }
         const last = lastApproved.get(paneID);
         if (last !== undefined && last.block === prompt.block && deps.now() - last.at < SAME_PROMPT_GRACE_MS) return 'repeat';
-        // The second read sits right before the key: the prompt must not have changed while the first one awaited.
+        // The second read sits right before the key: the prompt must not have changed since the first.
+        if (secondReadDelay > 0) await new Promise<void>((resolve) => schedule(resolve, secondReadDelay));
         const second = await readScreen(ctx, paneID);
         const again = second === null ? null : parsePermissionPrompt(second);
         if (again === null || !again.approvable || again.block !== prompt.block) return 'changed';
@@ -137,26 +147,24 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
         return 'approved';
     };
 
-    const check = async (paneID: string, ctx: AppContext): Promise<AutoApproveOutcome> => {
+    const check = async (paneID: string, ctx: AppContext, final = true): Promise<AutoApproveOutcome> => {
         if (!isOn()) return 'off';
         if (!isClaudePane(ctx, paneID)) return 'not-claude';
         // One check per pane at a time: two reads racing could each send an Enter.
         if (inFlight.has(paneID)) return 'busy';
         inFlight.add(paneID);
         try {
-            return await decide(paneID, ctx);
+            return await decide(paneID, ctx, final);
         } finally {
             inFlight.delete(paneID);
         }
     };
 
     const attempt = (paneID: string, ctx: AppContext, retry: number): void => {
-        void check(paneID, ctx).then((outcome) => {
-            const delay = AUTO_APPROVE_RETRY_MS[retry];
+        const delay = AUTO_APPROVE_RETRY_MS[retry];
+        void check(paneID, ctx, delay === undefined).then((outcome) => {
             // A busy pane is mid-read by another check, which may have read the screen before this prompt opened.
-            if ((outcome === 'no-prompt' || outcome === 'busy') && delay !== undefined) {
-                schedule(() => attempt(paneID, ctx, retry + 1), delay);
-            }
+            if (RETRIED.has(outcome) && delay !== undefined) schedule(() => attempt(paneID, ctx, retry + 1), delay);
         });
     };
 
@@ -184,7 +192,10 @@ export function createAutoApprover(deps: AutoApproverDeps): AutoApprover {
         },
         check,
         onNotification(paneID, ctx) {
-            if (isOn()) attempt(paneID, ctx, 0);
+            if (!isOn()) return;
+            // Claude fires the hook once per prompt, so the same command asked again is a new prompt to answer.
+            lastApproved.delete(paneID);
+            attempt(paneID, ctx, 0);
         }
     };
 }

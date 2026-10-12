@@ -2358,20 +2358,25 @@ How it decides (`packages/daemon/src/handlers/app/auto-approve.ts`):
 
 - **When:** on Claude's `Notification` hook (`kelpi event notification`, agent-lifecycle.md
   §5.3), which fires as a permission prompt opens. No polling. When the pane shows no prompt
-  yet, it reads again after 0.25, 1 and 3 seconds.
+  yet, or one still being drawn, it reads again after 0.25, 1 and 3 seconds.
 - **Which panes:** shell panes with a live Claude session (a session id, which `SessionEnd`
   clears), so a pane Claude has left is never answered.
 - **What:** only a prompt in the exact shape Claude draws, at the bottom of the screen, with the
   cursor on `1. Yes` (`@kelpi/core/agent` `parsePermissionPrompt`). Anything else is left.
-- **Never:** a command on the never-auto-approve list is left for the user, however it is
-  quoted: `rm -r`, `git push`, `sudo`, a download piped into a shell or interpreter, a shell
+- **Never:** a command on the never-auto-approve list is left for the user, with quotes and
+  backslashes seen through: `rm -r`, `git push`, `sudo`, anything piped or heredoc'd into a
+  shell or interpreter, a shell
   or interpreter running inline code (`bash -lc`, `python -c`, `node -e`), any command that
   mentions `auto-approve` (so it cannot extend itself), `mkfs`,
   `dd of=`, `find -delete`, `git clean -f`, `git reset --hard`, `git checkout -- .`, `rsync
   --delete`, `gh pr merge`, `npm publish`, `kubectl` writes, `terraform apply`, `helm install`,
   `aws` writes, a variable as the command word, `alias` and `eval` (`NEVER_AUTO_APPROVE`).
-- **Before the key:** the pane is read a second time and must show the same prompt; only then
-  is Enter sent. The same prompt is not sent Enter again within 15 seconds.
+  It is a denylist: an agent set on getting past it can (an encoded payload, for example).
+- **Before the key:** the pane is read again 0.1 seconds later and must show the same prompt;
+  only then is Enter sent. A prompt still showing within 15 seconds of its Enter is not sent
+  another, unless a new notification says it is a new prompt. A key the user presses in that
+  0.1 seconds (Down, say) can move the cursor before the Enter lands.
+- **`status`** lists the latest 100 prompts left for the user.
 - **Expiry:** checked before every key. Nothing is persisted: a daemon restart turns it off.
 
 ---

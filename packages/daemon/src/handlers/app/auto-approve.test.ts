@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AppContext } from './context.js';
-import { AUTO_APPROVE_RETRY_MS, createAutoApprover, SAME_PROMPT_GRACE_MS } from './auto-approve.js';
+import { AUTO_APPROVE_RETRY_MS, createAutoApprover, SAME_PROMPT_GRACE_MS, SECOND_READ_DELAY_MS } from './auto-approve.js';
 import { flush, harness, id, NOW, seeded } from './testing.js';
 
 const P1 = id('dddddddd', 1);
@@ -36,7 +36,7 @@ function rig(options: { readonly agent?: 'claude' | 'codex' | null } = {}) {
         }
     };
     const scheduled: { run: () => void; ms: number }[] = [];
-    const approver = createAutoApprover({ now: () => clock, schedule: (run, ms) => scheduled.push({ run, ms }) });
+    const approver = createAutoApprover({ now: () => clock, schedule: (run, ms) => scheduled.push({ run, ms }), secondReadDelayMs: 0 });
     return {
         h,
         ctx,
@@ -140,6 +140,30 @@ describe('createAutoApprover', () => {
         expect(await r.approver.check(P1, r.ctx)).toBe('approved');
     });
 
+    it('answers the same command asked again, since a new notification means a new prompt', async () => {
+        const r = rig();
+        await r.on(10);
+        r.show(P1, prompt('npm test'));
+        r.approver.onNotification(P1, r.ctx);
+        await flush();
+        r.approver.onNotification(P1, r.ctx);
+        await flush();
+        expect(r.keys).toEqual([`${P1}:enter`, `${P1}:enter`]);
+    });
+
+    it('re-reads a half-drawn prompt instead of leaving it for the user', async () => {
+        const r = rig();
+        await r.on(10);
+        r.show(P1, prompt('ls').replace(' ❯ 1. Yes', '   1. Yes'), prompt('ls'));
+        r.approver.onNotification(P1, r.ctx);
+        await flush();
+        expect(r.keys).toEqual([]);
+        r.scheduled.shift()?.run();
+        await flush();
+        expect(r.keys).toEqual([`${P1}:enter`]);
+        expect(r.approver.status().left).toEqual([]);
+    });
+
     it('re-reads a pane whose prompt is not drawn yet when the notification arrives', async () => {
         const r = rig();
         await r.on(10);
@@ -178,7 +202,7 @@ describe('auto-approve command', () => {
         h.table.get('notification')?.({ command: 'notification', pane_id: P1, title: 'Claude Code', body: 'Claude needs your permission to use Bash', background_tasks: 0 }, ctx, null);
         await flush();
         expect(keys).toEqual([]);
-        await new Promise((resolve) => setTimeout(resolve, (AUTO_APPROVE_RETRY_MS[0] ?? 0) + 50));
+        await new Promise((resolve) => setTimeout(resolve, (AUTO_APPROVE_RETRY_MS[0] ?? 0) + 2 * SECOND_READ_DELAY_MS + 100));
         expect(keys).toEqual([`${P1}:enter`]);
     });
 });

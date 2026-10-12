@@ -159,6 +159,8 @@ export interface AppHandlerOptions {
      * restart is about to resume. Defaults to never.
      */
     readonly agentEventsMuted?: ((paneID: string) => boolean) | undefined;
+    /** `auto-approve`'s state. Defaults to a fresh one on `now` and real timers. */
+    readonly autoApprover?: AutoApprover | undefined;
     /** Default columns/rows for a PTY spawned without a client-reported size. */
     readonly defaultCols?: number | undefined;
     readonly defaultRows?: number | undefined;
@@ -253,7 +255,7 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         isAppActive: options.isAppActive ?? (() => false),
         isPaneFocused: options.isPaneFocused ?? null,
         agentEventsMuted: options.agentEventsMuted ?? (() => false),
-        autoApprover: createAutoApprover({ now })
+        autoApprover: options.autoApprover ?? createAutoApprover({ now })
     };
 }
 

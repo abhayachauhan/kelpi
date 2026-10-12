@@ -152,6 +152,16 @@ export const NEVER_AUTO_APPROVE: readonly NeverRule[] = [
     { name: 'sudo', test: (t) => t.some((x) => base(x) === 'sudo') },
     { name: 'download piped into a shell', test: (t, all) => /\b(?:curl|wget)\b/.test(all) && t.some((x) => SHELLS.has(base(x))) },
     { name: 'download piped into an interpreter', test: (t, all) => /\b(?:curl|wget)\b/.test(all) && t.some((x) => INTERPRETERS.test(base(x))) },
+    // Code fed to a shell or interpreter on stdin is hidden from every other rule: `… | base64 -d | sh`, `python3 <<EOF`.
+    {
+        name: 'piped or heredoc into a shell or interpreter',
+        test: (t, all) => {
+            const word = base(commandWord(t) ?? '');
+            if (!SHELLS.has(word) && !INTERPRETERS.test(word)) return false;
+            const text = all.replace(/["'\\]/g, '');
+            return new RegExp(`\\|\\s*(?:\\S*/)?${word}\\b`).test(text) || /<</.test(text) || t.includes('-') || t.includes('-s');
+        }
+    },
     // `python -c '…'` hides its command from every rule below; so does `bash -c` with quotes in the way.
     {
         name: 'shell or interpreter running inline code',
