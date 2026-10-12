@@ -693,8 +693,6 @@ async function handlePaneRunSuggested(args: string[]): Promise<void> {
         errLine(`${RUN_SUGGESTED}: the new pane has no id`);
         exit(1);
     }
-    // A new pane's shell starts when a client reports its size; a capture starts it now, so the send isn't dropped.
-    await decodeReply({ command: 'pane-capture', target: made, lines: 1 }, RUN_SUGGESTED);
     await decodeReply({ command: 'pane-send', target: made, text: found.command, bare: false }, RUN_SUGGESTED);
     printLine(`ran in new pane ${made}`);
 }

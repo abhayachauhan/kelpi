@@ -22,6 +22,7 @@ const BANG = /^(\s*(?:[⏺●]\s+)?)! (\S.*)$/;
 const FENCE_OPEN = /^(\s*)```\s*(?:bash|sh|shell|zsh)?\s*$/;
 const FENCE_CLOSE = /^\s*```\s*$/;
 const RUN = /^(\s*(?:[⏺●]\s+)?)Run\b/;
+const USER_PROMPT = /^[>❯] /;
 // A paragraph that starts with a common CLI and reads like shell (a flag, pipe, redirect or quote),
 // so prose that merely starts with "git" or "make" is left alone.
 const CLI =
@@ -70,10 +71,13 @@ export function joinWraps(lines: readonly string[], indent: number, wrap = 0): s
     return commands.join('\n');
 }
 
+// A rule, or the `⎿` Claude Code puts under a command's output, never continues a command.
+const ends = (line: string): boolean => !line.trim() || RULE.test(line) || line.trimStart().startsWith('⎿');
+
 /** Lines after `from` that continue a one-line command at `indent` (indented by exactly indent + 2). */
 function continuation(lines: readonly string[], from: number, indent: number): number {
     let end = from + 1;
-    while (end < lines.length && at(lines, end).trim() && lead(at(lines, end)) === indent + 2) end += 1;
+    while (end < lines.length && !ends(at(lines, end)) && lead(at(lines, end)) === indent + 2) end += 1;
     return end;
 }
 
@@ -86,7 +90,7 @@ function bangContinuation(lines: readonly string[], from: number, indent: number
     let end = from + 1;
     for (; end < lines.length; end += 1) {
         const line = at(lines, end);
-        if (!line.trim()) break;
+        if (ends(line)) break;
         const wraps = lead(line) === indent + 2 || (lead(line) === indent && !BANG.test(line) && !FENCE_OPEN.test(line));
         if (!wraps) break;
     }
@@ -102,6 +106,7 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
     const found: Suggested[] = [];
     for (let i = 0; i < lines.length; i += 1) {
         const line = at(lines, i);
+        if (USER_PROMPT.test(line)) continue; // the user's own message, echoed into the transcript
         const bang = BANG.exec(line);
         if (bang) {
             // The block's indent is the column of `!`; `! ` becomes two spaces so the width check
@@ -109,7 +114,9 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
             const indent = width(bang[1] ?? '');
             const end = bangContinuation(lines, i, indent);
             const block = [' '.repeat(indent + 2) + (bang[2] ?? ''), ...reindent(lines.slice(i + 1, end), indent)];
-            found.push({ kind: 'bang', command: joinWraps(block, indent, wrap).trim() });
+            // Output under it (`⎿`) means this is a `!` command the user already ran, not a suggestion.
+            const ran = at(lines, end).trimStart().startsWith('⎿');
+            if (!ran) found.push({ kind: 'bang', command: joinWraps(block, indent, wrap).trim() });
             i = end - 1;
             continue;
         }
@@ -118,6 +125,8 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
             while (close < lines.length && !FENCE_CLOSE.test(at(lines, close))) close += 1;
             if (close >= lines.length) break; // still being written
             const body = lines.slice(i + 1, close);
+            // Another fence inside means this ``` closed a block that began above the capture.
+            if (body.some((l) => /^\s*```/.test(l))) continue;
             const filled = body.filter((l) => l.trim());
             if (filled.length) found.push({ kind: 'fence', command: joinWraps(body, Math.min(...filled.map(lead)), wrap) });
             i = close;
@@ -161,8 +170,11 @@ function candidates(lines: readonly string[], wrap: number): Suggested[] {
 
 /** The last command Claude Code suggested in `capture`, rejoined, or null. */
 export function findSuggested(capture: string): Suggested | null {
-    const lines = capture.replace(/\r/g, '').split('\n');
-    return candidates(lines, wrapWidth(lines)).filter((c) => c.command.trim()).at(-1) ?? null;
+    const all = capture.replace(/\r/g, '').split('\n');
+    // Read only the transcript above Claude Code's input box, so a draft in the box is never the suggestion.
+    const rules = all.flatMap((line, index) => (BOX_RULE.test(line) ? [index] : []));
+    const lines = rules.length >= 2 ? all.slice(0, rules.at(-2)) : all;
+    return candidates(lines, wrapWidth(all)).filter((c) => c.command.trim()).at(-1) ?? null;
 }
 
 // Tab, ESC, CR and the rest: anything that could act as a keystroke instead of text.

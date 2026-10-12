@@ -85,6 +85,20 @@ describe('findSuggested', () => {
         expect(findSuggested('  git is how we ship changes, and make builds them.\n')).toBeNull();
     });
 
+    it('skips a ! command the user already ran, the user prompt echo and the input box draft', () => {
+        const ran = ['  ! gh auth status', '', '! gh auth status', '  ⎿  Logged in to github.com'].join('\n');
+        expect(findSuggested(ran)?.command).toBe('gh auth status');
+        expect(findSuggested(['! git status', '  ⎿  clean'].join('\n'))).toBeNull();
+        expect(findSuggested(['  ! echo suggested', '> please run ! git status now'].join('\n'))?.command).toBe('echo suggested');
+        const box = ['! echo suggested', RULE, '> ! rm -rf build', RULE, '  ⏵⏵ accept edits on'];
+        expect(findSuggested(box.join('\n'))?.command).toBe('echo suggested');
+    });
+
+    it('ignores a closing fence whose opener scrolled out of the capture', () => {
+        const capture = ['echo tail-of-old-block', '```', 'Some prose here.', '```bash', 'ls -la', '```'];
+        expect(findSuggested(capture.join('\n'))).toEqual({ kind: 'fence', command: 'ls -la' });
+    });
+
     it('returns the last suggestion and nothing for prose or an unclosed fence', () => {
         expect(findSuggested(['! echo first', '```sh', 'echo second', '```', '  ! echo third', 'prose'].join('\n'))?.command).toBe('echo third');
         expect(findSuggested('⏺ All tests pass.\n  Nothing to run.')).toBeNull();

@@ -867,12 +867,17 @@ no new handler.
   exactly `pane capture`'s (no `--target` => `requirePaneID()`, silent exit 0 outside).
 - Reads `pane-capture` with `lines: 200, scrollback: true`, then finds the **last** suggestion
   (`packages/cli/src/suggested.ts`): a `! <cmd>` line, a `! <cmd>` inside a sentence (cut at the
-  sentence end, a closing backtick or a following "then"), a `bash`/`sh` fenced block, an indented
-  command after a line starting "Run", or a shell-looking paragraph starting with a common CLI.
+  sentence end, a closing backtick or a following "then"), a fenced block that is unlabelled or
+  labelled `bash`, `sh`, `shell` or `zsh`, an indented command after a line starting "Run", or a
+  shell-looking paragraph starting with a common CLI.
   Claude Code's wraps (a newline plus the block's indent and two more spaces, or back at the `!`
   column) are rejoined with a space, or with nothing when the line filled the width read from
   Claude's full-width input rule and the halves form one long word. A fenced block keeps one
-  command per line, and a line ending in `\` keeps its newline.
+  command per line, and a line ending in `\` keeps its newline. A rule or a `⎿` output line
+  never continues a command. Skipped: everything from Claude's input box down (a draft is not a
+  suggestion), the user's own echoed messages (a column-0 `> ` or `❯ ` line), a `!` line with
+  `⎿` output under it (already run), and a fence whose body holds another fence (its opener
+  scrolled out of the capture).
 - Nothing found: `kelpi pane run-suggested: no suggested command found in the pane`, exit 1.
   A command with a control character (other than newline) or an invisible format character
   (`\p{Cf}`: bidi overrides, zero-width) is refused with `not running it: <why>`, exit 1, and
@@ -880,7 +885,8 @@ no new handler.
 - The command goes to stdout. `--print` stops there, exit 0.
 - Otherwise the CLI asks on stderr, `Run it in this Claude session as "! <cmd>"? [y/N]` or
   `Run it in a new shell pane? [y/N]`, and reads one line of stdin. Only `y`/`yes` runs it; any
-  other answer or EOF prints `not run`, exit 1.
+  other answer or EOF prints `not run`, exit 1. So run as `! kelpi pane run-suggested` from
+  inside Claude Code, where stdin gives no answer, it never runs anything; use `--print` there.
 - **In the session** only when all hold: the suggestion was a `!` line or an inline `!`, it is
   one line, the source pane's `pane-list` entry has `agent: "claude"`, an `agent_session_id`
   and `status` `idle` or `waitingForInput`, and the capture ends with Claude Code's input box
@@ -893,8 +899,8 @@ no new handler.
   `pane-send` with `text: "! <cmd>"`; Claude Code runs it and the output lands in the session.
   Ack `ran in <pane-id>`.
 - **Otherwise** a new shell pane: `pane-split` next to the source pane with `focus: true` and
-  `path` = the source's `working_directory`, a one-line `pane-capture` of the new pane (which
-  starts its shell now, so the send is not dropped), then `pane-send` of the command. A
+  `path` = the source's `working_directory`, then `pane-send` of the command (which starts a
+  pane's deferred shell itself, so the text is not dropped). A
   multi-line command never goes to a Claude session. Ack `ran in new pane <pane-id>`.
 
 ### 9.13 `kelpi pane sync` (issue #121)
