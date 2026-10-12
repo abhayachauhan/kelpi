@@ -291,14 +291,15 @@ const WRAPPERS: ReadonlyArray<readonly [string, string]> = [
     ['[', ']'],
     ['{', '}']
 ];
-const count = (text: string, char: string): number => text.split(char).length - 1;
+/** Prose punctuation trimmed from the end of a token: `see notes.md,`, `(https://x)?`. */
+const TRAILING_PROSE = new Set([',', ';', ':', '?', '!']);
 
 /**
  * The token under `offset` in `line`, with the Swift trimming rules applied.
  *
  * `GhosttyApp.swift:267-292` trimmed trailing whitespace (ghostty's URL regex pads a match to
  * end-of-line) and then trailing dots. We do both, and additionally drop trailing prose
- * punctuation (`,;:`), a balanced wrapper pair (also when punctuation follows it, `(url).`) and
+ * punctuation (`,;:?!`), a balanced wrapper pair (also when punctuation follows it, `(url).`) and
  * an unmatched bracket at either end, because a token here comes from a plain-text scan rather
  * than a URL regex and therefore keeps punctuation the regex would have excluded.
  */
@@ -318,7 +319,20 @@ export function tokenRangeAt(line: string, offset: number): { start: number; end
     while (start > 0 && !TOKEN_BREAK.has(line[start - 1] as string)) start -= 1;
     let end = offset + 1;
     while (end < line.length && !TOKEN_BREAK.has(line[end] as string)) end += 1;
-    const token = (): string => line.slice(start, end);
+    // Character counts kept in step with the trims, so a long line costs one pass, not one per trim.
+    const counts = new Map<string, number>();
+    for (let i = start; i < end; i++) counts.set(line[i] as string, (counts.get(line[i] as string) ?? 0) + 1);
+    const count = (char: string): number => counts.get(char) ?? 0;
+    const first = (): string => (end > start ? (line[start] as string) : '');
+    const last = (): string => (end > start ? (line[end - 1] as string) : '');
+    const dropFirst = (): void => {
+        counts.set(first(), count(first()) - 1);
+        start += 1;
+    };
+    const dropLast = (): void => {
+        counts.set(last(), count(last()) - 1);
+        end -= 1;
+    };
 
     // Repeat until nothing changes: in `(https://x).` the full stop hides the closing paren
     // from the wrapper pass until the punctuation trim has removed it.
@@ -326,21 +340,22 @@ export function tokenRangeAt(line: string, offset: number): { start: number; end
         before = end - start;
         for (const [open, close] of WRAPPERS) {
             // Only a balanced token: in `(https://x?q=(1)` the last paren is the URL's own.
-            while (token().startsWith(open) && token().endsWith(close) && end - start > 1 && count(token(), open) === count(token(), close)) {
-                start += 1;
-                end -= 1;
+            const balanced = (): boolean => count(open) === count(close);
+            while (first() === open && last() === close && end - start > 1 && balanced()) {
+                dropFirst();
+                dropLast();
             }
         }
         // Trailing dots first (the Swift rule), then prose punctuation, then dots again so
         // `see notes.md.,` lands on `notes.md`.
         for (let pass = 0; pass < 2; pass++) {
-            while (token().endsWith('.')) end -= 1;
-            while (token().endsWith(',') || token().endsWith(';') || token().endsWith(':')) end -= 1;
+            while (last() === '.') dropLast();
+            while (TRAILING_PROSE.has(last())) dropLast();
         }
         // An unmatched bracket at either end: `see notes.md)`, `(https://x and more)`, `A_(b))`.
         for (const [open, close] of WRAPPERS) {
-            while (token().endsWith(close) && count(token(), close) > count(token(), open)) end -= 1;
-            while (token().startsWith(open) && count(token(), open) > count(token(), close)) start += 1;
+            while (last() === close && count(close) > count(open)) dropLast();
+            while (first() === open && count(open) > count(close)) dropFirst();
         }
     }
     return end <= start ? null : { start, end };

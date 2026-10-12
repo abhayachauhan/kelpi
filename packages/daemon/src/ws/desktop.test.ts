@@ -177,12 +177,23 @@ describe('tokenAt (CONT-122 trimming)', () => {
         expect(tokenAt('see https://en.wikipedia.org/wiki/A_(b)).', 8)).toBe('https://en.wikipedia.org/wiki/A_(b)');
         expect(tokenAt('(https://example.com/x?q=(1)', 5)).toBe('https://example.com/x?q=(1)');
         expect(tokenAt('see {https://example.com/x}.', 8)).toBe('https://example.com/x');
-        expect(tokenAt('open a(1).md', 8)).toBe('a(1).md');
+    });
+
+    it('trims a question or exclamation mark after a link', () => {
+        expect(tokenAt('did you see the PR (https://x.com/a)?', 22)).toBe('https://x.com/a');
+        expect(tokenAt('it landed (https://x.com/a)!', 13)).toBe('https://x.com/a');
+        expect(tokenAt('see https://x.com/a)?', 6)).toBe('https://x.com/a');
+        expect(tokenAt('https://x.com/a?q=1', 3)).toBe('https://x.com/a?q=1');
     });
 
     it('answers null for a token of brackets and punctuation only', () => {
         expect(tokenAt('see ((( now', 5)).toBeNull();
         expect(tokenAt('see (. now', 5)).toBeNull();
+    });
+
+    it('trims a very long token in one pass', () => {
+        // A click reads the whole logical line, so a minified bundle can hand it a huge token.
+        expect(tokenAt('('.repeat(200_000), 5)).toBeNull();
     });
 
     it('keeps punctuation that is really part of a filename', () => {
@@ -234,6 +245,9 @@ describe('tokenRangeAt (#303)', () => {
         // The underline covers the URL only, not the paren or the full stop after it.
         const prose = 'the PR (https://e.com/a). It';
         expect(tokenRangeAt(prose, 10)).toEqual({ start: prose.indexOf('https'), end: prose.indexOf(')') });
+        // On the unmatched `(` itself, the underline still starts at the URL.
+        const open = '(https://e.com/a and more)';
+        expect(tokenRangeAt(open, 0)).toEqual({ start: 1, end: open.indexOf(' ') });
         expect(tokenRangeAt('a  b', 1)).toBeNull();
     });
 });
