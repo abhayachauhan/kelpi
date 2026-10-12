@@ -410,10 +410,12 @@ most `web` verbs, `md`/`open` after the first positional).
 - `-h` / `--help` accepted by: all `pane` subcommands with usage printers (split, create,
   close, name, resize, send, move, capture, list), `pane sync` (also bare `help`),
   `workspace` (group-level and per subcommand), `group` (group-level, plus
-  `reorder`/`sort`), `web` (group-level, also `help`), `web cookies`, `md`, `open`,
+  `create`/`rename`/`delete`/`reorder`/`sort`), `layout select` (also outside a pane), `web` (group-level, also `help`), `web cookies`, `md`, `open`,
   `graft`, `install-hooks`. Help goes to **stdout**, exit 0. (Exception: `graft` help goes to stderr and
   exits 0; the top-level `kelpi --help` usage goes to stderr and exits 0.)
-- `event`, `layout`, `diff`, `group create/rename/delete`, `pane move-to-workspace`,
+- A `--` ends the flags for `group create/rename/delete`, so `kelpi group delete -- --help`
+  names a group called `--help`.
+- `event`, `layout cycle`, `diff`, `pane move-to-workspace`,
   `pane send-key`, `pane id` have no dedicated help flag handling; a `--help` there is
   either an invalid value error or silently ignored per that command's parsing.
 

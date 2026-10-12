@@ -8,13 +8,21 @@
  * request/response too, with the same full-reply `--json`.
  */
 
-import { absoluteUserPath, hasHelpFlag, isHelpToken, parseFlag, popSwitch, rejectLeftoverArgs } from '../args.js';
+import { absoluteUserPath, dropEndOfFlags, hasHelpFlag, isHelpToken, parseFlag, popSwitch, rejectLeftoverArgs } from '../args.js';
 import { errLine, exit, printLine, writeErr, writeOut } from '../io.js';
 import { asString, asStringArray, stableStringify, type JsonObject } from '../json.js';
 import { decodeReply } from '../reply.js';
 import { printGroupTable, replyArray } from '../table.js';
 import { sendJSON } from '../transport.js';
-import { groupReorderUsage, groupSetRepoUsage, groupSortUsage, groupUsage } from '../usage.js';
+import {
+    groupCreateUsage,
+    groupDeleteUsage,
+    groupRenameUsage,
+    groupReorderUsage,
+    groupSetRepoUsage,
+    groupSortUsage,
+    groupUsage
+} from '../usage.js';
 
 export async function handleGroup(args: string[]): Promise<void> {
     const action = args.shift();
@@ -130,6 +138,11 @@ async function handleGroupList(args: string[]): Promise<void> {
 }
 
 async function handleGroupCreate(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(groupCreateUsage);
+        exit(0);
+    }
+    dropEndOfFlags(args);
     const name = args.shift();
     if (name === undefined) {
         errLine('Usage: kelpi group create <name> [--color blue]');
@@ -142,6 +155,11 @@ async function handleGroupCreate(args: string[]): Promise<void> {
 }
 
 async function handleGroupRename(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(groupRenameUsage);
+        exit(0);
+    }
+    dropEndOfFlags(args);
     const nameOrID = args.shift();
     const newName = args.shift();
     if (nameOrID === undefined || newName === undefined) {
@@ -152,6 +170,11 @@ async function handleGroupRename(args: string[]): Promise<void> {
 }
 
 async function handleGroupDelete(args: string[]): Promise<void> {
+    if (hasHelpFlag(args)) {
+        writeOut(groupDeleteUsage);
+        exit(0);
+    }
+    dropEndOfFlags(args);
     const nameOrID = args.shift();
     if (nameOrID === undefined) {
         errLine('Usage: kelpi group delete <name-or-id> [--cascade]');

@@ -6,15 +6,22 @@
  * That is the shipped behavior and it is kept.
  */
 
-import { errLine, exit } from '../io.js';
+import { hasHelpFlag } from '../args.js';
+import { errLine, exit, writeOut } from '../io.js';
 import { requirePaneID } from '../env.js';
 import { sendJSON } from '../transport.js';
+import { layoutSelectUsage } from '../usage.js';
 
 export async function handleLayout(args: string[]): Promise<void> {
     const action = args.shift();
     if (action === undefined) {
         errLine('Usage: kelpi layout cycle|select <name>');
         exit(1);
+    }
+    // Help needs no pane, so it comes before the pane check.
+    if (action === 'select' && hasHelpFlag(args)) {
+        writeOut(layoutSelectUsage);
+        exit(0);
     }
 
     const paneID = requirePaneID();

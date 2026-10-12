@@ -568,6 +568,58 @@ Run \`kelpi group <subcommand> --help\` for subcommand-specific usage.
 
 `;
 
+export const groupCreateUsage = `Usage:
+  kelpi group create <name> [--color <color>]
+
+Creates a new, empty workspace group.
+
+Options:
+  --color <color>  Group color, e.g. blue.
+  -h, --help       Show this help.
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const groupRenameUsage = `Usage:
+  kelpi group rename <name-or-id> <new-name>
+
+Renames a group. Use -- before a name that starts with a dash.
+
+Options:
+  -h, --help       Show this help.
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const groupDeleteUsage = `Usage:
+  kelpi group delete <name-or-id> [--cascade]
+
+Deletes a group. Its children promote unless --cascade is given.
+Use -- before a name that starts with a dash: kelpi group delete -- --help
+
+Options:
+  --cascade        Delete the group's children along with it.
+  -h, --help       Show this help.
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
+export const layoutSelectUsage = `Usage:
+  kelpi layout select <name>
+
+Applies a layout to the calling pane's workspace.
+Valid layouts: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled
+
+Options:
+  -h, --help       Show this help.
+
+Exit codes: 0 on success, non-zero on failure.
+
+`;
+
 export const groupSetRepoUsage = `Usage:
   kelpi group set-repo <name-or-id> <path> [--worktree | --no-worktree] [--json]
   kelpi group set-repo <name-or-id> --none [--json]

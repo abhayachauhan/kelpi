@@ -106,9 +106,17 @@ export function isHelpToken(token: string): boolean {
     return token === '-h' || token === '--help' || token === 'help';
 }
 
-/** `--help` / `-h` ANYWHERE in argv — the form `pane`/`workspace` subcommands use. */
+/** `--help` / `-h` ANYWHERE in argv before a `--` — the form `pane`/`workspace` subcommands use. */
 export function hasHelpFlag(args: readonly string[]): boolean {
-    return args.includes('--help') || args.includes('-h');
+    const end = args.indexOf('--');
+    const flags = end === -1 ? args : args.slice(0, end);
+    return flags.includes('--help') || flags.includes('-h');
+}
+
+/** Remove the first `--`, so `kelpi group delete -- --help` names a group called `--help`. */
+export function dropEndOfFlags(args: string[]): void {
+    const end = args.indexOf('--');
+    if (end !== -1) args.splice(end, 1);
 }
 
 /**
