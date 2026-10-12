@@ -291,14 +291,16 @@ const WRAPPERS: ReadonlyArray<readonly [string, string]> = [
     ['[', ']'],
     ['{', '}']
 ];
+const count = (text: string, char: string): number => text.split(char).length - 1;
 
 /**
  * The token under `offset` in `line`, with the Swift trimming rules applied.
  *
  * `GhosttyApp.swift:267-292` trimmed trailing whitespace (ghostty's URL regex pads a match to
  * end-of-line) and then trailing dots. We do both, and additionally drop trailing prose
- * punctuation (`,;:`) and a balanced wrapper pair, because a token here comes from a plain-text
- * scan rather than a URL regex and therefore keeps punctuation the regex would have excluded.
+ * punctuation (`,;:`), a balanced wrapper pair (also when punctuation follows it, `(url).`) and
+ * an unmatched bracket at either end, because a token here comes from a plain-text scan rather
+ * than a URL regex and therefore keeps punctuation the regex would have excluded.
  */
 export function tokenAt(line: string, offset: number): string | null {
     const range = tokenRangeAt(line, offset);
@@ -318,20 +320,29 @@ export function tokenRangeAt(line: string, offset: number): { start: number; end
     while (end < line.length && !TOKEN_BREAK.has(line[end] as string)) end += 1;
     const token = (): string => line.slice(start, end);
 
-    for (const [open, close] of WRAPPERS) {
-        while (token().startsWith(open) && token().endsWith(close) && end - start > 1) {
-            start += 1;
-            end -= 1;
+    // Repeat until nothing changes: in `(https://x).` the full stop hides the closing paren
+    // from the wrapper pass until the punctuation trim has removed it.
+    for (let before = -1; before !== end - start; ) {
+        before = end - start;
+        for (const [open, close] of WRAPPERS) {
+            // Only a balanced token: in `(https://x?q=(1)` the last paren is the URL's own.
+            while (token().startsWith(open) && token().endsWith(close) && end - start > 1 && count(token(), open) === count(token(), close)) {
+                start += 1;
+                end -= 1;
+            }
+        }
+        // Trailing dots first (the Swift rule), then prose punctuation, then dots again so
+        // `see notes.md.,` lands on `notes.md`.
+        for (let pass = 0; pass < 2; pass++) {
+            while (token().endsWith('.')) end -= 1;
+            while (token().endsWith(',') || token().endsWith(';') || token().endsWith(':')) end -= 1;
+        }
+        // An unmatched bracket at either end: `see notes.md)`, `(https://x and more)`, `A_(b))`.
+        for (const [open, close] of WRAPPERS) {
+            while (token().endsWith(close) && count(token(), close) > count(token(), open)) end -= 1;
+            while (token().startsWith(open) && count(token(), open) > count(token(), close)) start += 1;
         }
     }
-    // Trailing dots first (the Swift rule), then prose punctuation, then dots again so
-    // `see notes.md.,` lands on `notes.md`.
-    for (let pass = 0; pass < 2; pass++) {
-        while (token().endsWith('.')) end -= 1;
-        while (token().endsWith(',') || token().endsWith(';') || token().endsWith(':')) end -= 1;
-    }
-    while (token().endsWith(')') && !token().includes('(')) end -= 1;
-    while (token().endsWith(']') && !token().includes('[')) end -= 1;
     return end <= start ? null : { start, end };
 }
 

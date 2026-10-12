@@ -147,6 +147,44 @@ describe('tokenAt (CONT-122 trimming)', () => {
         expect(tokenAt('see notes.md)', 6)).toBe('notes.md');
     });
 
+    /**
+     * Agents write `name (https://…): note` and `the PR (https://…).` all the time. The wrapper
+     * pass ran before the punctuation trim, so the `:` or `.` hid the closing paren and the
+     * token kept its `(`, which no scheme anchor matches.
+     */
+    it('unwraps brackets that prose punctuation follows', () => {
+        expect(tokenAt('1. web#3133 (https://github.com/o/r/pull/3133): test fix', 14)).toBe('https://github.com/o/r/pull/3133');
+        expect(tokenAt('the PR (https://github.com/o/r/pull/5249). It has', 10)).toBe('https://github.com/o/r/pull/5249');
+        expect(tokenAt('see (notes.md), then', 7)).toBe('notes.md');
+        expect(tokenAt('see [https://example.com/x];', 7)).toBe('https://example.com/x');
+        expect(tokenAt('see ((notes.md)).', 7)).toBe('notes.md');
+    });
+
+    it('keeps parens inside a URL while unwrapping the ones around it', () => {
+        expect(tokenAt('(https://en.wikipedia.org/wiki/A_(b)).', 5)).toBe('https://en.wikipedia.org/wiki/A_(b)');
+        expect(tokenAt('https://en.wikipedia.org/wiki/A_(b)', 5)).toBe('https://en.wikipedia.org/wiki/A_(b)');
+    });
+
+    it('drops an opening bracket whose closer is outside the token', () => {
+        expect(tokenAt('(https://example.com/x and more)', 5)).toBe('https://example.com/x');
+        expect(tokenAt('[notes.md is here]', 3)).toBe('notes.md');
+        expect(tokenAt('{https://example.com/x and more}', 5)).toBe('https://example.com/x');
+        // A path opens as itself now, not as a missing `(draft.md`.
+        expect(tokenAt('(draft.md is ready', 3)).toBe('draft.md');
+    });
+
+    it('counts brackets, so only the unmatched ones are trimmed', () => {
+        expect(tokenAt('see https://en.wikipedia.org/wiki/A_(b)).', 8)).toBe('https://en.wikipedia.org/wiki/A_(b)');
+        expect(tokenAt('(https://example.com/x?q=(1)', 5)).toBe('https://example.com/x?q=(1)');
+        expect(tokenAt('see {https://example.com/x}.', 8)).toBe('https://example.com/x');
+        expect(tokenAt('open a(1).md', 8)).toBe('a(1).md');
+    });
+
+    it('answers null for a token of brackets and punctuation only', () => {
+        expect(tokenAt('see ((( now', 5)).toBeNull();
+        expect(tokenAt('see (. now', 5)).toBeNull();
+    });
+
     it('keeps punctuation that is really part of a filename', () => {
         expect(tokenAt('open my-file_v2.md', 8)).toBe('my-file_v2.md');
         expect(tokenAt('open a(1).md', 8)).toBe('a(1).md');
@@ -193,6 +231,9 @@ describe('tokenRangeAt (#303)', () => {
             expect(range === null ? null : line.slice(range.start, range.end)).toBe(tokenAt(line, offset));
         }
         expect(tokenRangeAt('cat (docs/a.md) now', 7)).toEqual({ start: 5, end: 14 });
+        // The underline covers the URL only, not the paren or the full stop after it.
+        const prose = 'the PR (https://e.com/a). It';
+        expect(tokenRangeAt(prose, 10)).toEqual({ start: prose.indexOf('https'), end: prose.indexOf(')') });
         expect(tokenRangeAt('a  b', 1)).toBeNull();
     });
 });
@@ -419,6 +460,17 @@ describe('open-terminal-target (CONT-122 / TERM-052)', () => {
         const clicked = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: 6 });
         expect(probed).toMatchObject({ ok: true, opened: 'external', url: 'https://example.com/x' });
         expect(clicked).toEqual(probed);
+    });
+
+    it('opens a URL an agent wrapped in parens before a full stop or colon, on hover and click', async () => {
+        for (const text of ['Here\'s the PR: manage#5249 (https://github.com/o/r/pull/5249). It has', '1. web#3133 (https://github.com/o/r/pull/3133): fix']) {
+            const offset = text.indexOf('https') + 4;
+            const f = fixture({ cell: { text, offset } });
+            const probed = await f.channel.run('probe-terminal-target', { pane_id: P0, row: 0, col: offset });
+            const clicked = await f.channel.run('open-terminal-target', { pane_id: P0, row: 0, col: offset });
+            expect(probed).toMatchObject({ ok: true, opened: 'external', url: text.slice(text.indexOf('https'), text.indexOf(')')) });
+            expect(clicked).toEqual(probed);
+        }
     });
 
     it('reports a .md path that is not on disk instead of opening a broken pane', async () => {
