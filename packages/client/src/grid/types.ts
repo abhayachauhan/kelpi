@@ -11,6 +11,7 @@ import type { MouseEvent, ReactNode } from 'react';
 
 import type { PaneChromeItemDescriptor } from '../pane-chrome';
 import type { DividerRatioCommit } from './divider';
+import type { IconName } from './icons';
 
 /**
  * The pane fields the grid and its header read. A full `Pane` (from the store mirror)
@@ -76,7 +77,7 @@ export type RenderPane = (
 /** Per-pane commands the header raises. All optional: an unwired button is inert. */
 export interface PaneActions {
     /** Host-registered commands join the header's existing overflow and keyboard controls. */
-    readonly headerCommands?: readonly { readonly id: string; readonly title: string; readonly enabled?: boolean; run(paneID: string): void }[] | undefined;
+    readonly headerCommands?: readonly { readonly id: string; readonly title: string; readonly icon?: IconName | undefined; readonly enabled?: boolean; run(paneID: string): void }[] | undefined;
     readonly headerCommandsFor?: ((paneID: string) => NonNullable<PaneActions['headerCommands']>) | undefined;
     readonly headerExtras?: ((paneID: string) => ReactNode) | undefined;
     /**

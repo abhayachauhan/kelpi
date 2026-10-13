@@ -17,7 +17,7 @@ function info(sequence = 1, instanceID = 'i1', ready = true): PluginContribution
 }
 const plugin: PluginInfo = { manifest: decodePluginManifest({ id: ID, version: '1.0.0', apiVersion: 1, trust: 'full', backend: 'backend.mjs', contributes: {
     commands: [
-        { id: `${ID}.run`, title: 'Run', menu: 'both', when: { 'workspace.exists': true }, enablement: { 'context.ready': true } },
+        { id: `${ID}.run`, title: 'Run', icon: 'restart', menu: 'both', when: { 'workspace.exists': true }, enablement: { 'context.ready': true } },
         { id: `${ID}.plain`, title: 'Plain command' }
     ],
     menus: [
@@ -225,7 +225,8 @@ describe('contribution conditions and targeting', () => {
         states.set(ID, { ...info(2), state: { context: { ready: true, show: true }, items: {} } });
         const menu = resolveContributionMenus([plugin], states, store.getState(), 'pane', 'p1');
         expect(menu).toHaveLength(1);
-        expect(menu[0]).toMatchObject({ id: `${ID}.pane-menu`, group: 'checks', enabled: false });
+        expect(menu[0]).toMatchObject({ id: `${ID}.pane-menu`, group: 'checks', icon: 'restart', enabled: false });
+        expect(resolveContributionMenus([plugin], states, store.getState(), 'palette').find(item => item.command === `${ID}.plain`)).not.toHaveProperty('icon');
         expect(resolveContributionMenus([plugin], states, store.getState(), 'pane', 'p2')[0]?.enabled).toBe(true);
         expect(resolveContributionMenus([plugin], states, store.getState(), 'palette')).toHaveLength(2);
     });

@@ -104,9 +104,13 @@ export interface PluginViewDefinition {
     /** Heights for the root bands this view declares; see `PLUGIN_BAND_HEIGHTS`. */
     readonly bandHeights?: PluginBandHeights;
 }
+/** Built-in glyphs a command may name for its pane header button; the client draws each one. */
+export const PLUGIN_COMMAND_ICONS = ['plugin', 'restart', 'refresh', 'terminal', 'copy', 'pencil', 'eye', 'rename', 'document', 'note', 'table', 'checklist', 'plain-text', 'globe', 'tag', 'branch', 'zoom'] as const;
+export type PluginCommandIcon = typeof PLUGIN_COMMAND_ICONS[number];
 export interface PluginCommandDefinition {
     readonly id: string;
     readonly title: string;
+    readonly icon?: PluginCommandIcon;
     readonly shortcut?: string;
     readonly menu?: 'pane' | 'workspace' | 'both' | 'pane.header';
     readonly when?: PluginWhen;
@@ -390,7 +394,9 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         const cmd = pluginObject(raw);
         const menu = cmd['menu'];
         if (menu !== undefined && menu !== 'pane' && menu !== 'workspace' && menu !== 'both' && menu !== 'pane.header') throw new Error('invalid plugin menu');
-        return { id: contributionID(cmd['id']), title: label(cmd['title'], 'command title'), ...(cmd['shortcut'] === undefined ? {} : { shortcut: label(cmd['shortcut'], 'shortcut') }), ...(menu === undefined ? {} : { menu }),
+        const icon = cmd['icon'];
+        if (icon !== undefined && !(PLUGIN_COMMAND_ICONS as readonly unknown[]).includes(icon)) throw new Error(`invalid plugin command icon; use one of: ${PLUGIN_COMMAND_ICONS.join(', ')}`);
+        return { id: contributionID(cmd['id']), title: label(cmd['title'], 'command title'), ...(icon === undefined ? {} : { icon: icon as PluginCommandIcon }), ...(cmd['shortcut'] === undefined ? {} : { shortcut: label(cmd['shortcut'], 'shortcut') }), ...(menu === undefined ? {} : { menu }),
             ...(cmd['when'] === undefined ? {} : { when: decodePluginWhen(cmd['when']) }), ...(cmd['enablement'] === undefined ? {} : { enablement: decodePluginWhen(cmd['enablement']) }) };
     });
     const commandReference = (raw: unknown): string => {

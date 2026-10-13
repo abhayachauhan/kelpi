@@ -79,6 +79,12 @@ corresponding inferred entry. Commands
 still appear in the palette by default unless an explicit palette rule limits their display.
 Groups and numeric order provide deterministic menu ordering.
 
+A command's optional `icon` picks the glyph its `pane.header` button shows, in place of the
+generic plugin glyph. It must name one of Kelpi's built-in glyphs (`PLUGIN_COMMAND_ICONS`):
+`plugin`, `restart`, `refresh`, `terminal`, `copy`, `pencil`, `eye`, `rename`, `document`,
+`note`, `table`, `checklist`, `plain-text`, `globe`, `tag`, `branch`, `zoom`. Any other value
+fails validation.
+
 Conditions are a conjunction of strict scalar equalities, without an expression language.
 `null` matches a missing fact. Host facts are:
 

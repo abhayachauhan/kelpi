@@ -115,6 +115,20 @@ describe('paneChromeModel', () => {
         expect(run).not.toHaveBeenCalled();
     });
 
+    it('draws a plugin command with its own icon, and the plugin glyph when it names none', () => {
+        const model = paneChromeModel({
+            pane: testPane('p2'),
+            focused: false,
+            nowSeconds: NOW,
+            paneWidth: 900,
+            commands: [
+                { id: 'sample.board.restart', title: 'Restart', icon: 'restart', run: vi.fn() },
+                { id: 'sample.board.inspect', title: 'Inspect', run: vi.fn() }
+            ]
+        });
+        expect(model.descriptor.controls.slice(0, 2).map((control) => control.icon)).toEqual(['restart', 'plugin']);
+    });
+
     it('rows the controls the way the header does, with the ids and test ids it already had', () => {
         const markdown = paneChromeModel({
             pane: testPane('m', { type: 'markdown', filePath: '/repo/NOTES.md' }),

@@ -14,6 +14,13 @@ describe('declarative plugin extension contracts', () => {
         expect(decoded.contributes.commands[0]?.menu).toBe('pane.header');
     });
 
+    it('accepts a built-in command icon and rejects any other', () => {
+        const withIcon = (icon: unknown) => decodePluginManifest({ ...base, contributes: { commands: [{ id: 'sample.board.restart', title: 'Restart', menu: 'pane.header', icon }] } });
+        expect(withIcon('restart').contributes.commands[0]?.icon).toBe('restart');
+        expect(decodePluginManifest({ ...base, contributes: { commands: [{ id: 'sample.board.refresh', title: 'Refresh' }] } }).contributes.commands[0]).not.toHaveProperty('icon');
+        for (const icon of ['close', 'rocket', '', 3, null]) expect(() => withIcon(icon), String(icon)).toThrow('invalid plugin command icon');
+    });
+
     it('permits scoped native workbench defaults and declared foreign contributions', () => {
         expect(decodePluginManifest({ ...base, dependencies: [{ pluginID: 'other.board', version: '^1.0.0' }], contributes: {
             views: [{ ...view, placements: ['other.board.slot'] }], containers: [{ ...container, slots: [{ id: slot, title: 'Native', defaultView: 'kelpi.workspaces' }] }]
