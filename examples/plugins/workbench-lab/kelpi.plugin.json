@@ -23,7 +23,7 @@
       ] }
     ],
     "commands": [
-      { "id": "example.workbench-lab.open", "title": "Open Lab dashboard", "shortcut": "super+alt+l", "menu": "pane.header" },
+      { "id": "example.workbench-lab.open", "title": "Open Lab dashboard", "icon": "checklist", "shortcut": "super+alt+l", "menu": "pane.header" },
       { "id": "example.workbench-lab.history", "title": "Read Lab operation history" },
       { "id": "example.workbench-lab.dependency-history", "title": "Read Agent Board activity" }
     ],

@@ -107,6 +107,9 @@ export interface PluginViewDefinition {
 /** Built-in glyphs a command may name for its pane header button; the client draws each one. */
 export const PLUGIN_COMMAND_ICONS = ['plugin', 'restart', 'refresh', 'terminal', 'copy', 'pencil', 'eye', 'rename', 'document', 'note', 'table', 'checklist', 'plain-text', 'globe', 'tag', 'branch', 'zoom'] as const;
 export type PluginCommandIcon = typeof PLUGIN_COMMAND_ICONS[number];
+export function isPluginCommandIcon(value: unknown): value is PluginCommandIcon {
+    return (PLUGIN_COMMAND_ICONS as readonly unknown[]).includes(value);
+}
 export interface PluginCommandDefinition {
     readonly id: string;
     readonly title: string;
@@ -395,8 +398,9 @@ export function decodePluginManifest(raw: unknown): PluginManifest {
         const menu = cmd['menu'];
         if (menu !== undefined && menu !== 'pane' && menu !== 'workspace' && menu !== 'both' && menu !== 'pane.header') throw new Error('invalid plugin menu');
         const icon = cmd['icon'];
-        if (icon !== undefined && !(PLUGIN_COMMAND_ICONS as readonly unknown[]).includes(icon)) throw new Error(`invalid plugin command icon; use one of: ${PLUGIN_COMMAND_ICONS.join(', ')}`);
-        return { id: contributionID(cmd['id']), title: label(cmd['title'], 'command title'), ...(icon === undefined ? {} : { icon: icon as PluginCommandIcon }), ...(cmd['shortcut'] === undefined ? {} : { shortcut: label(cmd['shortcut'], 'shortcut') }), ...(menu === undefined ? {} : { menu }),
+        if (icon !== undefined && typeof icon !== 'string') throw new Error('plugin command icon must be a string');
+        // A glyph this build lacks (one a newer Kelpi added) keeps the generic plugin glyph.
+        return { id: contributionID(cmd['id']), title: label(cmd['title'], 'command title'), ...(isPluginCommandIcon(icon) ? { icon } : {}), ...(cmd['shortcut'] === undefined ? {} : { shortcut: label(cmd['shortcut'], 'shortcut') }), ...(menu === undefined ? {} : { menu }),
             ...(cmd['when'] === undefined ? {} : { when: decodePluginWhen(cmd['when']) }), ...(cmd['enablement'] === undefined ? {} : { enablement: decodePluginWhen(cmd['enablement']) }) };
     });
     const commandReference = (raw: unknown): string => {

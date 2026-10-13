@@ -82,8 +82,9 @@ Groups and numeric order provide deterministic menu ordering.
 A command's optional `icon` picks the glyph its `pane.header` button shows, in place of the
 generic plugin glyph. It must name one of Kelpi's built-in glyphs (`PLUGIN_COMMAND_ICONS`):
 `plugin`, `restart`, `refresh`, `terminal`, `copy`, `pencil`, `eye`, `rename`, `document`,
-`note`, `table`, `checklist`, `plain-text`, `globe`, `tag`, `branch`, `zoom`. Any other value
-fails validation.
+`note`, `table`, `checklist`, `plain-text`, `globe`, `tag`, `branch`, `zoom`. A name this
+build does not know keeps the generic glyph, so a plugin written for a newer Kelpi still
+installs; a value that is not a string fails validation.
 
 Conditions are a conjunction of strict scalar equalities, without an expression language.
 `null` matches a missing fact. Host facts are:

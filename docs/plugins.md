@@ -545,6 +545,8 @@ instead when a built-in or an earlier plugin takes it, and what a later plugin r
 the command does not apply. Views read the same list as the chrome
 snapshot's [`keymap`](plugin-chrome.md#the-keyboard-map). Set a command's `menu` to
 `pane.header` to contribute a pane-header action, including the header's overflow behavior.
+Its optional `icon` picks the button's glyph from Kelpi's built-in set
+([UI contributions](plugin-ui.md)).
 Settings → Plugins lets users change, disable, and restore each plugin shortcut. Overrides
 belong to the client and stable daemon identity, survive reload, and update mounted views.
 Unmodified typing and Shift-only shortcuts are rejected; bundled shortcuts retain priority.

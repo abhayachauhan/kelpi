@@ -14,11 +14,12 @@ describe('declarative plugin extension contracts', () => {
         expect(decoded.contributes.commands[0]?.menu).toBe('pane.header');
     });
 
-    it('accepts a built-in command icon and rejects any other', () => {
+    it('keeps a built-in command icon, drops a glyph this build lacks, and rejects a non-string', () => {
         const withIcon = (icon: unknown) => decodePluginManifest({ ...base, contributes: { commands: [{ id: 'sample.board.restart', title: 'Restart', menu: 'pane.header', icon }] } });
         expect(withIcon('restart').contributes.commands[0]?.icon).toBe('restart');
         expect(decodePluginManifest({ ...base, contributes: { commands: [{ id: 'sample.board.refresh', title: 'Refresh' }] } }).contributes.commands[0]).not.toHaveProperty('icon');
-        for (const icon of ['close', 'rocket', '', 3, null]) expect(() => withIcon(icon), String(icon)).toThrow('invalid plugin command icon');
+        for (const icon of ['close', 'rocket', '']) expect(withIcon(icon).contributes.commands[0], icon).not.toHaveProperty('icon');
+        for (const icon of [3, null, {}]) expect(() => withIcon(icon), String(icon)).toThrow('plugin command icon must be a string');
     });
 
     it('permits scoped native workbench defaults and declared foreign contributions', () => {

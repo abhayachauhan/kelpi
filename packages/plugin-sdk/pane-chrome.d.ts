@@ -166,7 +166,10 @@ export interface PaneChromeControl {
     readonly ref: string;
     readonly kind: PaneChromeControlKind;
     readonly label: string;
-    /** An SF Symbol-style name. The presenter supplies its own drawing. */
+    /**
+     * An SF Symbol-style name. The presenter supplies its own drawing. An `item` control carries
+     * its command's `icon` (one of `PLUGIN_COMMAND_ICONS`), or `plugin` when it names none.
+     */
     readonly icon: string;
     readonly enabled: boolean;
     /** The close control: the host never folds it away, and neither should a presenter. */

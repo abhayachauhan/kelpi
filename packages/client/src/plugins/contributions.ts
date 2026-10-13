@@ -1,9 +1,10 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import {
-    decodePluginItemPatch, isPluginContextKey, isPluginID, PLUGIN_MAX_CONTRIBUTION_BYTES, pluginObject, pluginRecord,
+    decodePluginItemPatch, isPluginContextKey, isPluginID, PLUGIN_COMMAND_ICONS, PLUGIN_MAX_CONTRIBUTION_BYTES, pluginObject, pluginRecord,
     type PluginContextValue, type PluginContributionInfo, type PluginContributionState, type PluginInfo,
     type PluginItemDefinition, type PluginItemTone, type PluginMenuDefinition, type PluginWhen, type PluginCommandIcon
 } from '@kelpi/protocol';
+import type { IconName } from '../grid/icons';
 import type { PaneChromeItemDescriptor } from '../pane-chrome';
 import type { KelpiRuntime } from '../state';
 import type { KelpiState } from '../state/store';
@@ -271,6 +272,8 @@ export function paneChromeItemDescriptors(items: readonly ResolvedContributionIt
         tone: item.tone, enabled: item.enabled
     }));
 }
+// Every glyph a plugin may name must be one the header can draw.
+PLUGIN_COMMAND_ICONS satisfies readonly IconName[];
 export interface ResolvedContributionMenu {
     readonly id: string;
     readonly pluginID: string;
