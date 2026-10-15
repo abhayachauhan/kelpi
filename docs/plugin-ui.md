@@ -82,7 +82,11 @@ Groups and numeric order provide deterministic menu ordering.
 A command's optional `icon` picks the glyph its `pane.header` button shows, in place of the
 generic plugin glyph. It must name one of Kelpi's built-in glyphs (`PLUGIN_COMMAND_ICONS`):
 `plugin`, `restart`, `refresh`, `terminal`, `copy`, `pencil`, `eye`, `rename`, `document`,
-`note`, `table`, `checklist`, `plain-text`, `globe`, `tag`, `branch`, `zoom`. A name this
+`note`, `table`, `checklist`, `plain-text`, `tag`, `branch`. The glyphs of controls every header
+shows (close, the splits, new web pane's globe, the overflow menu) and of the zoom badge are not
+offered. A few of these also mark a built-in control on one pane type: `copy`, `pencil` and `eye`
+on markdown, `refresh` on diff, `checklist` and `plain-text` on a scratchpad, `tag` and `branch`
+as the label and branch badges. Prefer one that does not repeat a control beside it. A name this
 build does not know keeps the generic glyph, so a plugin written for a newer Kelpi still
 installs; a value that is not a string fails validation.
 

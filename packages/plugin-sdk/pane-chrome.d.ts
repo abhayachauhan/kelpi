@@ -168,7 +168,8 @@ export interface PaneChromeControl {
     readonly label: string;
     /**
      * An SF Symbol-style name. The presenter supplies its own drawing. An `item` control carries
-     * its command's `icon` (one of `PLUGIN_COMMAND_ICONS`), or `plugin` when it names none.
+     * its command's `icon` (the names are listed in docs/plugin-ui.md), or `plugin` when it names
+     * none.
      */
     readonly icon: string;
     readonly enabled: boolean;

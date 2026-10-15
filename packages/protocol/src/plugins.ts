@@ -104,8 +104,12 @@ export interface PluginViewDefinition {
     /** Heights for the root bands this view declares; see `PLUGIN_BAND_HEIGHTS`. */
     readonly bandHeights?: PluginBandHeights;
 }
-/** Built-in glyphs a command may name for its pane header button; the client draws each one. */
-export const PLUGIN_COMMAND_ICONS = ['plugin', 'restart', 'refresh', 'terminal', 'copy', 'pencil', 'eye', 'rename', 'document', 'note', 'table', 'checklist', 'plain-text', 'globe', 'tag', 'branch', 'zoom'] as const;
+/**
+ * Built-in glyphs a command may name for its pane header button; the client draws each one. The
+ * glyphs of controls every header shows (close, the splits, new web pane's globe, the overflow
+ * menu) and of the zoom badge are left out, so a plugin button never looks like one of them.
+ */
+export const PLUGIN_COMMAND_ICONS = ['plugin', 'restart', 'refresh', 'terminal', 'copy', 'pencil', 'eye', 'rename', 'document', 'note', 'table', 'checklist', 'plain-text', 'tag', 'branch'] as const;
 export type PluginCommandIcon = typeof PLUGIN_COMMAND_ICONS[number];
 export function isPluginCommandIcon(value: unknown): value is PluginCommandIcon {
     return (PLUGIN_COMMAND_ICONS as readonly unknown[]).includes(value);

@@ -18,7 +18,8 @@ describe('declarative plugin extension contracts', () => {
         const withIcon = (icon: unknown) => decodePluginManifest({ ...base, contributes: { commands: [{ id: 'sample.board.restart', title: 'Restart', menu: 'pane.header', icon }] } });
         expect(withIcon('restart').contributes.commands[0]?.icon).toBe('restart');
         expect(decodePluginManifest({ ...base, contributes: { commands: [{ id: 'sample.board.refresh', title: 'Refresh' }] } }).contributes.commands[0]).not.toHaveProperty('icon');
-        for (const icon of ['close', 'rocket', '']) expect(withIcon(icon).contributes.commands[0], icon).not.toHaveProperty('icon');
+        // `globe` and `zoom` are the header's own new web pane button and zoom badge.
+        for (const icon of ['close', 'globe', 'zoom', 'rocket', '']) expect(withIcon(icon).contributes.commands[0], icon).not.toHaveProperty('icon');
         for (const icon of [3, null, {}]) expect(() => withIcon(icon), String(icon)).toThrow('plugin command icon must be a string');
     });
 
