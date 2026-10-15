@@ -40,6 +40,15 @@ describe('shared plugin packaging', () => {
         expect(report.files.every(file => /^[a-f0-9]{64}$/.test(file.sha256))).toBe(true);
         expect(pluginPackageReport(packed).totalBytes).toBe(original.files.reduce((sum, file) => sum + file.bytes.length, 0));
     });
+    it('reports a command icon this build does not draw as a warning, without failing validation', async () => {
+        const h = fixture();
+        expect(pluginPackageReport(await readPluginPackage(h.source)).warnings).toEqual([]);
+        fs.writeFileSync(path.join(h.source, 'kelpi.plugin.json'), JSON.stringify({ ...h.manifest, contributes: { ...h.manifest.contributes,
+            commands: [{ id: 'example.package.run', title: 'Run', icon: 'restrat', menu: 'pane.header' }] } }));
+        const report = pluginPackageReport(await readPluginPackage(h.source));
+        expect(report.warnings).toEqual(['example.package.run: icon "restrat" is not a glyph this Kelpi draws, so its pane header button shows the generic plugin glyph']);
+        expect((await packPlugin(h.source, h.archive)).warnings).toEqual(report.warnings);
+    });
     it('produces identical archives despite timestamps, creation order, modes and source location', async () => {
         const a = fixture(), b = fixture();
         for (const name of ['z', 'A', 'a-b', 'a.b', 'é']) fs.writeFileSync(path.join(a.source, name), name);

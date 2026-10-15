@@ -222,7 +222,9 @@ kelpi plugin install ./my-plugin.kelpi-plugin --trust
 
 Validation checks API compatibility, manifest declarations, entry files, portable paths,
 and package limits. The report includes the manifest version, dependencies, content revision,
-and each file's size and SHA-256 digest. Installed dependency availability is checked by the
+and each file's size and SHA-256 digest. Its `warnings` list, also printed to standard error,
+names declarations that still validate but are probably mistakes, such as a command `icon`
+this build does not draw. Installed dependency availability is checked by the
 daemon, rather than by offline validation. Validation never runs the backend or proves that
 its code works.
 

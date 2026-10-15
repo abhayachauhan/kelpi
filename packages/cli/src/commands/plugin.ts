@@ -52,6 +52,8 @@ export async function handlePlugin(args: string[]): Promise<void> {
             if (action === 'pack' && !output) throw new Error('pack requires --out <file.kelpi-plugin>');
             if (args.length) throw new Error(`unexpected arguments: ${args.join(' ')}`);
             const result = action === 'pack' ? await packPlugin(source, output!) : { path: path.resolve(source), ...pluginPackageReport(await readPluginPackage(source)) };
+            // Also on stderr, so an author who never reads the JSON still sees them; they do not fail.
+            for (const warning of result.warnings) errLine(`warning: ${warning}`);
             printLine(JSON.stringify(result, null, 2)); return;
         }
         if (action === 'dev') {

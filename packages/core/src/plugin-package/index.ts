@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { gzip, gunzip } from 'node:zlib';
-import { decodePluginManifest, pluginAssetPath, pluginRecord, type PluginManifest } from '@kelpi/protocol';
+import { decodePluginManifest, pluginAssetPath, pluginManifestWarnings, pluginRecord, type PluginManifest } from '@kelpi/protocol';
 
 export const PLUGIN_PACKAGE_MAX_BYTES = 32 * 1024 * 1024;
 export const PLUGIN_PACKAGE_MAX_FILES = 2000;
@@ -154,11 +154,14 @@ export async function readPluginPackage(source: string): Promise<PluginPackage> 
 }
 
 export function pluginPackageReport(pkg: PluginPackage) {
+    // Validated already, so the manifest is present and parses.
+    const manifestFile = pkg.files.find(file => file.relative === 'kelpi.plugin.json');
     return {
         format: pkg.format, pluginID: pkg.manifest.id, name: pkg.manifest.name, version: pkg.manifest.version,
         apiVersion: pkg.manifest.apiVersion, revision: pkg.revision, fileCount: pkg.files.length, totalBytes: pkg.totalBytes,
         dependencies: pkg.manifest.dependencies ?? [],
         files: pkg.files.map(file => ({ path: file.relative, bytes: file.bytes.length, sha256: digest(file.bytes) })),
+        warnings: manifestFile ? pluginManifestWarnings(JSON.parse(manifestFile.bytes.toString('utf8'))) : [],
     };
 }
 

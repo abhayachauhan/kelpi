@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodePluginManifest } from './plugins.js';
+import { decodePluginManifest, pluginManifestWarnings } from './plugins.js';
 
 const base = { id: 'sample.board', version: '1.0.0', apiVersion: 1, trust: 'full', backend: 'backend.mjs' };
 const slot = 'sample.board.details';
@@ -21,6 +21,19 @@ describe('declarative plugin extension contracts', () => {
         // `globe` and `zoom` are the header's own new web pane button and zoom badge.
         for (const icon of ['close', 'globe', 'zoom', 'rocket', '']) expect(withIcon(icon).contributes.commands[0], icon).not.toHaveProperty('icon');
         for (const icon of [3, null, {}]) expect(() => withIcon(icon), String(icon)).toThrow('plugin command icon must be a string');
+    });
+
+    it('warns about a command icon this build does not draw, and about nothing else', () => {
+        const commands = [
+            { id: 'sample.board.restart', title: 'Restart', icon: 'restart' },
+            { id: 'sample.board.typo', title: 'Typo', icon: 'restrat' },
+            { id: 'sample.board.plain', title: 'Plain' }
+        ];
+        expect(pluginManifestWarnings({ ...base, contributes: { commands } })).toEqual([
+            'sample.board.typo: icon "restrat" is not a glyph this Kelpi draws, so its pane header button shows the generic plugin glyph'
+        ]);
+        expect(pluginManifestWarnings({ ...base, contributes: { commands: commands.slice(0, 1) } })).toEqual([]);
+        for (const raw of [null, {}, { contributes: {} }, { contributes: { commands: 'x' } }]) expect(pluginManifestWarnings(raw)).toEqual([]);
     });
 
     it('permits scoped native workbench defaults and declared foreign contributions', () => {

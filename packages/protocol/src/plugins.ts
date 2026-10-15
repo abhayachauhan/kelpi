@@ -114,6 +114,18 @@ export type PluginCommandIcon = typeof PLUGIN_COMMAND_ICONS[number];
 export function isPluginCommandIcon(value: unknown): value is PluginCommandIcon {
     return (PLUGIN_COMMAND_ICONS as readonly unknown[]).includes(value);
 }
+/**
+ * What offline validation reports about a manifest that still decodes but is probably wrong.
+ * Today that is a command `icon` this build does not draw: decoding drops it so a plugin written
+ * for a newer Kelpi still installs, which would otherwise leave an author's typo unexplained.
+ */
+export function pluginManifestWarnings(raw: unknown): string[] {
+    const contributes = pluginRecord(raw) ? raw['contributes'] : undefined;
+    const commands = pluginRecord(contributes) && Array.isArray(contributes['commands']) ? contributes['commands'] : [];
+    return commands.flatMap(cmd => pluginRecord(cmd) && typeof cmd['icon'] === 'string' && !isPluginCommandIcon(cmd['icon'])
+        ? [`${typeof cmd['id'] === 'string' ? cmd['id'] : 'a command'}: icon ${JSON.stringify(cmd['icon'])} is not a glyph this Kelpi draws, so its pane header button shows the generic plugin glyph`]
+        : []);
+}
 export interface PluginCommandDefinition {
     readonly id: string;
     readonly title: string;

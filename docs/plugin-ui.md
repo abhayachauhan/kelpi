@@ -88,7 +88,8 @@ offered. A few of these also mark a built-in control on one pane type: `copy`, `
 on markdown, `refresh` on diff, `checklist` and `plain-text` on a scratchpad, `tag` and `branch`
 as the label and branch badges. Prefer one that does not repeat a control beside it. A name this
 build does not know keeps the generic glyph, so a plugin written for a newer Kelpi still
-installs; a value that is not a string fails validation.
+installs, and `kelpi plugin validate` lists it under `warnings` so a typo does not go unseen; a
+value that is not a string fails validation.
 
 Conditions are a conjunction of strict scalar equalities, without an expression language.
 `null` matches a missing fact. Host facts are:
