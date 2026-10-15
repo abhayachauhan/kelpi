@@ -15,19 +15,19 @@ export const globalUsage = `Usage:
   kelpi plugin init|validate|pack|dev [--help]
   kelpi plugin list|contributions|install|enable|disable|reload|remove|history|rollback|logs [--help]
   kelpi plugin open|run|settings|watch|services|service-call|service-select [--help]
-  kelpi event stop|start|error|notification|session-start|session-end [--agent claude|codex] [--message ...] [--title ...] [--body ...]
+  kelpi event stop|start|error|notification|session-start|session-end|permission-request [--agent claude|codex] [--message ...] [--title ...] [--body ...]
   kelpi pane split [--direction horizontal|vertical] [--path /dir] [--name <label>] [--target <name-or-uuid>] [--focus]
   kelpi pane create [--path /dir] [--name <label>] [--target <name-or-uuid>] [--focus]
   kelpi pane close [--target <name-or-uuid>] [--workspace <name-or-uuid>]
   kelpi pane name <name>
   kelpi pane resize [--target <name-or-uuid>] [--workspace <name-or-uuid>] (--ratio <0..1> | --grow [amt] | --shrink [amt])
-  kelpi pane send [--bare] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
-  kelpi pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
+  kelpi pane send [--bare] [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
+  kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
   kelpi pane move [--focus] [left|right|up|down]
   kelpi pane move --target X (--above|--below|--left-of|--right-of) Y [--focus]
   kelpi pane move-to-workspace --to-workspace <name-or-uuid> [--create]
   kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
-  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
   kelpi pane sync (on|off|toggle|status) [--workspace <name-or-uuid>] [--json]
   kelpi pane sync exclude --target <name-or-uuid> [--workspace <name-or-uuid>]
   kelpi pane sync include --target <name-or-uuid> [--workspace <name-or-uuid>]
@@ -125,8 +125,9 @@ Options:
   --json               Print one structured result object instead of progress.
   -h, --help           Show this help.
 
-Writes five Claude hooks (UserPromptSubmit/Stop/Notification/SessionStart —
-matcher-less, so resumed sessions bind too — and SessionEnd) and four Codex
+Writes six Claude hooks (UserPromptSubmit/Stop/Notification/SessionStart,
+matcher-less so resumed sessions bind too; SessionEnd; and PermissionRequest
+with a 5 s timeout) and four Codex
 hooks with --agent codex (Codex has no SessionEnd or Notification event;
 PermissionRequest carries the approval signal). An existing file is copied to
 <file>.kelpi-backup before it changes; a file that is not valid JSON is refused,
@@ -155,7 +156,7 @@ transport failure, etc).
 `;
 
 export const paneSendUsage = `Usage:
-  kelpi pane send [--bare] [--json] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
+  kelpi pane send [--bare] [--json] [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
 
 Writes text to a pane's PTY and (unless --bare) presses Enter so it runs.
 
@@ -167,6 +168,9 @@ Options:
   --bare                      Write the text without the trailing Enter (pair
                               with \`kelpi pane send-key\` to submit).
   --json                      Print the structured reply instead of the ack.
+  --if-revision <n>           Send only if the pane's screen revision is still n
+                              (from \`kelpi pane capture --json\`); otherwise write
+                              nothing and exit 1 with "screen changed".
   -h, --help                  Show this help.
 
 Works from outside a Kelpi pane (no KELPI_PANE_ID needed) when --target is a UUID
@@ -287,7 +291,7 @@ is clamped to [0.1, 0.9]. Exit codes: 0 on success, non-zero on failure.
 `;
 
 export const paneCaptureUsage = `Usage:
-  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+  kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
 
 Prints a pane's terminal contents to stdout. Without --target, captures the
 calling pane (requires KELPI_PANE_ID).
@@ -297,10 +301,17 @@ Options:
   --workspace <name-or-uuid>  Scope label resolution to a specific workspace.
   --lines N                   Limit to the last N lines (positive integer).
   --scrollback                Include the full scrollback, not just the viewport.
+  --settle <ms>               Wait until the pane has had no output for <ms>
+                              (positive integer) before reading, giving up after
+                              10 s and reading the screen as it is then.
+  --json                      Print the structured reply (text, revision, cursor,
+                              alt_screen, settled) instead of the raw text.
   -h, --help                  Show this help.
 
 The target is flag-only: a bare positional argument is rejected on purpose so
 \`kelpi pane capture <uuid>\` can't silently fall back to capturing the caller.
+Pass the --json revision to \`kelpi pane send --if-revision\` (or send-key) to
+refuse the send if the screen changed since the capture.
 Exit codes: 0 on success, non-zero on failure.
 
 `;
@@ -347,8 +358,10 @@ export const workspaceUsage = `Usage:
 
 Subcommands:
   list      List every workspace (grouped + top-level).
-  create    Create a new workspace (optionally with a git worktree).
-  move      Move a workspace into a group or to the top level.
+  create    Create a new workspace (optionally with a git worktree, or nested
+            under another workspace).
+  move      Move a workspace into a group, to the top level, or under another
+            workspace.
   delete    Delete one or more workspaces.
   profile   Assign or clear a workspace's profile.
   label     Set/add/remove/clear a workspace's labels.
@@ -361,15 +374,18 @@ Run \`kelpi workspace <subcommand> --help\` for subcommand-specific usage.
 `;
 
 export const workspaceListUsage = `Usage:
-  kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
+  kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--no-header]
 
 Lists workspaces as a table, or a JSON array with --json. Each entry
 carries id, name, group, color, pane count, created_at, last_accessed_at,
-last_activity_at, labels, muted, and the icon and agent session id (when
-present).
+last_activity_at, labels, muted, and the icon, agent session id and parent
+(parent_id, parent_name) when present. Nested workspaces follow their parent,
+and the table gains a PARENT column when any workspace is nested.
 
 Options:
-  --group <name-or-id>  Only list workspaces in this group.
+  --group <name-or-id>  Only list workspaces in this group (with the
+                        workspaces nested under them).
+  --parent <name-or-id> Only list the workspaces nested under this one.
   --json                Print a JSON array instead of the table.
   --no-header           Omit the table header row.
   -h, --help            Show this help.
@@ -380,10 +396,12 @@ Exit codes: 0 on success, non-zero on failure.
 
 export const workspaceCreateUsage = `Usage:
   kelpi workspace create [--name "..."] [--path /dir] [--color blue] \\
-                       [--group <name>] [--profile <name>] [--repo <path> | --no-repo] \\
+                       [--group <name> | --parent <name-or-id> | --nested] \\
+                       [--profile <name>] [--repo <path> | --no-repo] \\
                        [--muted] [--icon <emoji>] [--json]
   kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>] \\
-                       [--update-main | --no-update-main] [--group <existing>] [--muted] \\
+                       [--update-main | --no-update-main] \\
+                       [--group <existing> | --parent <name-or-id> | --nested] [--muted] \\
                        [--icon <emoji>] [--json]
 
 Creates a new workspace and returns its id.
@@ -398,6 +416,11 @@ Options:
                      unless --worktree is given, which requires an existing group).
                      A group with a repository (\`kelpi group set-repo\`) starts the
                      workspace with that repository associated.
+  --parent <ws>      Nest the workspace under this one (name or id) in the
+                     sidebar. Nesting is one level deep, and a nested workspace
+                     follows its parent's group (and that group's repository).
+  --nested           Nest the workspace under the one this pane belongs to
+                     (KELPI_PANE_ID): an orchestrator spawning its workers.
   --profile <name>   Assign a workspace profile at creation.
   --repo <path>      Repository to associate; with --worktree, the source repo
                      (defaults to the group's repository, then --path, then
@@ -419,23 +442,29 @@ Exit codes: 0 on success, non-zero on failure.
 `;
 
 export const workspaceMoveUsage = `Usage:
-  kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
+  kelpi workspace move <name-or-id> (--group <name> | --top-level | --parent <ws>) [--index N]
 
-Moves a workspace into a group or detaches it to the top level.
+Moves a workspace into a group, detaches it to the top level, or nests it
+under another workspace. --group and --top-level also take a nested
+workspace back out of its parent.
 
 Options:
   --group <name>   Destination group (must already exist).
-  --top-level      Detach the workspace from its current group.
+  --top-level      Detach the workspace from its current group or parent.
+  --parent <ws>    Nest it under this workspace (name or id), or reorder it
+                   among that workspace's nested ones. Refused, with the
+                   reason, when that would nest more than one level deep.
   --index N        Position within the destination (0-based).
   -h, --help       Show this help.
 
-Exactly one of --group / --top-level is required. Exit codes: 0 on success,
-non-zero on failure.
+Exactly one of --group / --top-level / --parent is required. Exit codes: 0 on
+success, non-zero on failure (--group and --top-level are fire-and-forget, so
+only --parent reports a refusal).
 
 `;
 
 export const workspaceDeleteUsage = `Usage:
-  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] \\
+  kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] \\
                        [--prune-worktree [--delete-branch]] [--json]
 
 Deletes one or more workspaces (closing any remaining panes). Refuses to
@@ -443,6 +472,9 @@ delete the last remaining workspace.
 
 Options:
   --force, -y        Delete even with running, waiting or inactive agent sessions.
+  --cascade          Also delete the workspaces nested under it (their agents
+                     count toward --force, and --prune-worktree covers them).
+                     Without it, they move up into its place in the sidebar.
   --prune-worktree   Also remove the git worktrees Kelpi created for the
                      workspace (inside the worktree base path), on the Kelpi
                      host. Never forced: a worktree with uncommitted changes,
@@ -803,4 +835,42 @@ this pane's data store. Without --domain, \`clear\` removes every cookie.
 /** Print a stored block through a writer (stdout for help, stderr for errors). */
 export function printUsageBlock(block: string, write: Writer): void {
     write(block);
+}
+
+/** One installed plugin's `kelpi <name>` verb, as the daemon's `cli-list` action reports it (#391). */
+export interface PluginVerbListing {
+    readonly name: string;
+    readonly summary: string;
+    readonly pluginID: string;
+    readonly pluginName: string;
+    readonly enabled: boolean;
+}
+
+/**
+ * The `Plugin commands:` block `kelpi --help` appends after `globalUsage`: one `# <plugin name>`
+ * line per plugin, then one `  kelpi <name>  <summary>` line per verb, summaries aligned across
+ * the block and `(disabled)` after the name of a verb whose plugin is off. Empty when there are
+ * no plugin verbs, so the help output is exactly `globalUsage` then. Control characters (C0, DEL,
+ * C1) are dropped from plugin names and summaries, so a stray newline or escape cannot break or
+ * recolour the block.
+ */
+export function pluginVerbsUsage(verbs: readonly PluginVerbListing[]): string {
+    if (verbs.length === 0) return '';
+    const printable = (text: string): string => text.replace(/\t/g, ' ').replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
+    const sorted = [...verbs].sort(
+        (a, b) =>
+            a.pluginName.localeCompare(b.pluginName) || a.pluginID.localeCompare(b.pluginID) || a.name.localeCompare(b.name)
+    );
+    const label = (verb: PluginVerbListing): string => `kelpi ${verb.name}${verb.enabled ? '' : ' (disabled)'}`;
+    const width = Math.max(...sorted.map((verb) => label(verb).length));
+    const lines = ['Plugin commands:'];
+    let plugin: string | undefined;
+    for (const verb of sorted) {
+        if (verb.pluginID !== plugin) {
+            plugin = verb.pluginID;
+            lines.push(`  # ${printable(verb.pluginName)}`);
+        }
+        lines.push(`  ${label(verb).padEnd(width)}  ${printable(verb.summary)}`);
+    }
+    return `${lines.join('\n')}\n\n`;
 }

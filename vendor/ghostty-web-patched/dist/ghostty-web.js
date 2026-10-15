@@ -1437,7 +1437,7 @@ function MA(g, A, Q) {
   const B = g.scrollbackLength + g.rows - Q.linesFromBottom, E = d(g), C = $(A), I = AA(E, B, Q.col, Q.length, C(A.needle), C), D = E(B);
   return I === null || D === null ? null : { absoluteRow: B, offset: Q.col, length: Q.length, rowText: D.text };
 }
-function Z(g, A, Q) {
+function P(g, A, Q) {
   const B = (E) => {
     var C;
     return ((C = g(E)) == null ? void 0 : C.text) === Q.rowText;
@@ -1455,7 +1455,7 @@ function Z(g, A, Q) {
   }
   return null;
 }
-function P(g, A, Q, B, E = d(g)) {
+function Z(g, A, Q, B, E = d(g)) {
   const C = Q.needle;
   if (C.length === 0)
     return [];
@@ -1545,8 +1545,8 @@ class aA {
       return eA;
     this.stale = !1, this.shape = C;
     const I = E(), D = d(I);
-    this.current !== null && (this.current = Z(D, I.scrollbackLength + I.rows, this.current));
-    const o = this.query === null ? [] : P(I, Q, this.query, this.current, D), i = /* @__PURE__ */ new Map();
+    this.current !== null && (this.current = P(D, I.scrollbackLength + I.rows, this.current));
+    const o = this.query === null ? [] : Z(I, Q, this.query, this.current, D), i = /* @__PURE__ */ new Map();
     for (const e of o) {
       let h = i.get(e.row);
       h === void 0 && (h = new Uint8Array(I.cols), i.set(e.row, h));
@@ -1574,10 +1574,10 @@ class aA {
       return [];
     const B = d(A);
     if (this.current !== null) {
-      const E = Z(B, A.scrollbackLength + A.rows, this.current);
+      const E = P(B, A.scrollbackLength + A.rows, this.current);
       E !== this.current && (this.current = E, this.stale = !0);
     }
-    return P(A, Q, this.query, this.current, B);
+    return Z(A, Q, this.query, this.current, B);
   }
   /** The kind of one painted cell, in viewport coordinates. */
   kindAt(A, Q) {
@@ -2344,7 +2344,7 @@ class R {
 const z = class b {
   // ms between scroll steps
   constructor(A, Q, B, E) {
-    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownTarget = null, this.unitAnchor = null, this.pressSelectedWord = !1, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new K(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.boundDocumentMouseDownHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = B, this.textarea = E, this.attachEventListeners();
+    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownTarget = null, this.unitAnchor = null, this.pressSelectedWord = !1, this.pressPoint = null, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new K(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.boundDocumentMouseDownHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = B, this.textarea = E, this.attachEventListeners();
   }
   // -1 = up, 0 = none, 1 = down
   /**
@@ -2432,12 +2432,17 @@ const z = class b {
    * Check if there's an active selection
    */
   hasSelection() {
-    return !this.selectionStart || !this.selectionEnd ? !1 : !(this.selectionStart.col === this.selectionEnd.col && this.selectionStart.absoluteRow === this.selectionEnd.absoluteRow);
+    return this.selectionStart !== null && this.selectionEnd !== null;
   }
   /** Pin both endpoints before output can prune or move their buffer rows (#170). */
   trackSelectionForWrite() {
-    if (!this.selectionStart || !this.selectionEnd)
-      return !1;
+    if (!this.selectionStart || !this.selectionEnd) {
+      const Q = this.isSelecting ? this.pressPoint : null;
+      if (!Q)
+        return !1;
+      const B = this.wasmTerm.trackSelection(Q.col, Q.absoluteRow, Q.col, Q.absoluteRow);
+      return B || this.abandonPress(), B;
+    }
     this.markCurrentSelectionDirty();
     const A = this.wasmTerm.trackSelection(
       this.selectionStart.col,
@@ -2451,12 +2456,20 @@ const z = class b {
   restoreSelectionAfterWrite() {
     var E, C, I, D;
     const A = this.wasmTerm.readTrackedSelection();
+    if (!this.selectionStart && this.pressPoint) {
+      A ? (this.pressPoint.col = A.startCol, this.pressPoint.absoluteRow = A.startRow) : this.abandonPress();
+      return;
+    }
     if (!A) {
       this.clearSelection();
       return;
     }
     const Q = this.selectionStart ? A.startRow - this.selectionStart.absoluteRow : 0, B = ((E = this.selectionStart) == null ? void 0 : E.col) !== A.startCol || ((C = this.selectionStart) == null ? void 0 : C.absoluteRow) !== A.startRow || ((I = this.selectionEnd) == null ? void 0 : I.col) !== A.endCol || ((D = this.selectionEnd) == null ? void 0 : D.absoluteRow) !== A.endRow;
-    this.selectionStart = { col: A.startCol, absoluteRow: A.startRow }, this.selectionEnd = { col: A.endCol, absoluteRow: A.endRow }, this.unitAnchor && (this.unitAnchor.startRow += Q, this.unitAnchor.endRow += Q), this.markCurrentSelectionDirty(), B && this.selectionChangedEmitter.fire();
+    this.selectionStart = { col: A.startCol, absoluteRow: A.startRow }, this.selectionEnd = { col: A.endCol, absoluteRow: A.endRow }, this.unitAnchor && (this.unitAnchor.startRow += Q, this.unitAnchor.endRow += Q), this.pressPoint && (this.pressPoint.absoluteRow += Q), this.markCurrentSelectionDirty(), B && this.selectionChangedEmitter.fire();
+  }
+  /** vendor 0.4.0-kelpi.22: end a press that never selected, e.g. when output discarded its row. */
+  abandonPress() {
+    this.pressPoint = null, this.isSelecting = !1, this.stopAutoScroll();
   }
   /**
    * Clear the selection
@@ -2468,7 +2481,7 @@ const z = class b {
     if (A)
       for (let Q = A.startRow; Q <= A.endRow; Q++)
         this.dirtySelectionRows.add(Q);
-    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.unitAnchor = null, this.stopAutoScroll(), this.requestRender(), this.selectionChangedEmitter.fire();
+    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.unitAnchor = null, this.pressPoint = null, this.stopAutoScroll(), this.requestRender(), this.selectionChangedEmitter.fire();
   }
   /**
    * Select all text in the terminal
@@ -2569,16 +2582,16 @@ const z = class b {
         const C = this.viewportRowToAbsolute(B.row), I = Q.detail === 2 ? "word" : Q.detail >= 3 ? "line" : null;
         if (I) {
           const D = this.getUnitAt(I, B.col, C);
-          this.unitAnchor = { unit: I, ...D }, this.pressSelectedWord = I === "word", this.selectionStart = { col: D.startCol, absoluteRow: D.startRow }, this.selectionEnd = { col: D.endCol, absoluteRow: D.endRow };
+          this.unitAnchor = { unit: I, ...D }, this.pressPoint = null, this.pressSelectedWord = I === "word", this.selectionStart = { col: D.startCol, absoluteRow: D.startRow }, this.selectionEnd = { col: D.endCol, absoluteRow: D.endRow };
         } else
-          this.unitAnchor = null, this.pressSelectedWord = !1, this.selectionStart = { col: B.col, absoluteRow: C }, this.selectionEnd = { col: B.col, absoluteRow: C };
+          this.unitAnchor = null, this.pressSelectedWord = !1, this.pressPoint = { col: B.col, absoluteRow: C, x: Q.offsetX, y: Q.offsetY };
         this.isSelecting = !0;
       }
     }), A.addEventListener("mousemove", (Q) => {
       if (this.isSelecting) {
         this.markCurrentSelectionDirty();
         const B = this.pixelToCell(Q.offsetX, Q.offsetY), E = this.viewportRowToAbsolute(B.row);
-        this.extendSelectionTo(B.col, E), this.requestRender(), this.stopAutoScroll();
+        this.extendSelectionTo(B.col, E, { x: Q.offsetX, y: Q.offsetY }), this.requestRender(), this.stopAutoScroll();
       }
     }), A.addEventListener("mouseleave", (Q) => {
       if (this.isSelecting) {
@@ -2593,14 +2606,14 @@ const z = class b {
         if ((Q.clientX < B.left || Q.clientX > B.right || Q.clientY < B.top || Q.clientY > B.bottom) && (Q.clientY < B.top ? this.startAutoScroll(-1) : Q.clientY > B.bottom ? this.startAutoScroll(1) : this.stopAutoScroll(), this.autoScrollDirection === 0)) {
           this.markCurrentSelectionDirty();
           const o = this.pixelToCell(I, D), i = this.viewportRowToAbsolute(o.row);
-          this.extendSelectionTo(o.col, i), this.requestRender();
+          this.extendSelectionTo(o.col, i, { x: I, y: D }), this.requestRender();
         }
       }
     }, document.addEventListener("mousemove", this.boundDocumentMouseMoveHandler), this.boundDocumentMouseDownHandler = (Q) => {
       this.mouseDownTarget = Q.target;
     }, document.addEventListener("mousedown", this.boundDocumentMouseDownHandler), this.boundMouseUpHandler = (Q) => {
       if (A.contains(Q.target) || (this.pressSelectedWord = !1), this.isSelecting) {
-        this.isSelecting = !1, this.stopAutoScroll();
+        this.isSelecting = !1, this.pressPoint = null, this.stopAutoScroll();
         const B = this.getSelection();
         B && (this.terminal.options.copyOnSelect && this.copyToClipboard(B), this.selectionChangedEmitter.fire());
       }
@@ -2653,14 +2666,22 @@ const z = class b {
         return;
       }
       const Q = b.AUTO_SCROLL_SPEED * this.autoScrollDirection;
-      if (this.terminal.scrollLines(Q), this.selectionEnd) {
-        const B = this.wasmTerm.getDimensions();
+      this.terminal.scrollLines(Q);
+      const B = this.selectionEnd ?? this.pressPoint;
+      if (B) {
+        const E = this.wasmTerm.getDimensions();
         if (this.autoScrollDirection < 0) {
-          const E = this.viewportRowToAbsolute(0);
-          E < this.selectionEnd.absoluteRow && this.extendSelectionTo(0, E);
+          const C = this.viewportRowToAbsolute(0);
+          if (C < B.absoluteRow) {
+            const { height: I } = this.renderer.getMetrics();
+            this.extendSelectionTo(0, C, { x: 0, y: -I });
+          }
         } else {
-          const E = this.viewportRowToAbsolute(B.rows - 1);
-          E > this.selectionEnd.absoluteRow && this.extendSelectionTo(B.cols - 1, E);
+          const C = this.viewportRowToAbsolute(E.rows - 1);
+          if (C > B.absoluteRow) {
+            const { width: I, height: D } = this.renderer.getMetrics();
+            this.extendSelectionTo(E.cols - 1, C, { x: E.cols * I, y: (E.rows + 1) * D });
+          }
         }
       }
       this.requestRender();
@@ -2681,15 +2702,23 @@ const z = class b {
    * the anchor's start to the end of the word (line) under the pointer. Blank space under the
    * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
    * what auto-scroll compares against.
+   *
+   * vendor 0.4.0-kelpi.23: `point` is the pointer's canvas position, in pixels; a drag from a
+   * single press uses it to tell a drag from a wobble (`dragSelection`).
    */
-  extendSelectionTo(A, Q) {
-    const B = this.unitAnchor;
-    if (!B) {
-      this.selectionEnd = { col: A, absoluteRow: Q };
+  extendSelectionTo(A, Q, B) {
+    const E = this.unitAnchor;
+    if (!E) {
+      if (!this.pressPoint) {
+        this.selectionEnd = { col: A, absoluteRow: Q };
+        return;
+      }
+      const D = this.dragSelection(this.pressPoint, A, Q, B);
+      this.selectionStart = (D == null ? void 0 : D.start) ?? null, this.selectionEnd = (D == null ? void 0 : D.end) ?? null;
       return;
     }
-    const E = this.getUnitAt(B.unit, A, Q);
-    Q < B.startRow || Q === B.startRow && A < B.startCol ? (this.selectionStart = { col: B.endCol, absoluteRow: B.endRow }, this.selectionEnd = { col: E.startCol, absoluteRow: E.startRow }) : (this.selectionStart = { col: B.startCol, absoluteRow: B.startRow }, this.selectionEnd = { col: E.endCol, absoluteRow: E.endRow });
+    const C = this.getUnitAt(E.unit, A, Q);
+    Q < E.startRow || Q === E.startRow && A < E.startCol ? (this.selectionStart = { col: E.endCol, absoluteRow: E.endRow }, this.selectionEnd = { col: C.startCol, absoluteRow: C.startRow }) : (this.selectionStart = { col: E.startCol, absoluteRow: E.startRow }, this.selectionEnd = { col: C.endCol, absoluteRow: C.endRow });
   }
   /**
    * vendor 0.4.0-kelpi.19: the word or the line at a cell. A word is one row (blank space is its
@@ -2719,6 +2748,41 @@ const z = class b {
       col: Math.max(0, Math.min(E, this.terminal.cols - 1)),
       row: Math.max(0, Math.min(C, this.terminal.rows - 1))
     };
+  }
+  /**
+   * vendor 0.4.0-kelpi.22: what a drag from a single press to a cell selects, or null for nothing.
+   *
+   * vendor 0.4.0-kelpi.23 (#404): the pressed cell to the cell under the pointer, both included,
+   * as upstream, xterm.js and Kelpi before `-kelpi.22` did, but nothing while the pointer is still
+   * within a dead zone around the press point, 60% of a cell width in either axis. So a click, or a
+   * press that wobbles a pixel or two (even over a cell or row boundary), selects nothing, and a
+   * single character is selected by dragging a little way across it. The dead zone is measured on
+   * the canvas, so output that moves text under a held press does not turn it into a drag; the
+   * selection is still anchored on the pressed cell, which is pinned across trims (#170).
+   *
+   * `-kelpi.22` used Ghostty's threshold rule instead: a cell counted only once the drag had crossed
+   * 60% of it in the drag's direction. Kelpi users stop a drag in the middle of the last character
+   * they want, and that rule left it out (`conversation-00667` copied as `conversation-0066`).
+   */
+  dragSelection(A, Q, B, E) {
+    const C = this.renderer.getMetrics().width * 0.6;
+    if (Math.max(Math.abs(E.x - A.x), Math.abs(E.y - A.y)) < C)
+      return null;
+    const I = { col: A.col, absoluteRow: A.absoluteRow }, D = { col: Q, absoluteRow: B };
+    return B < A.absoluteRow || B === A.absoluteRow && Q < A.col ? { start: I, end: this.wideGlyphStart(D) } : { start: this.wideGlyphStart(I), end: D };
+  }
+  /**
+   * vendor 0.4.0-kelpi.23: the first half of the wide glyph a cell is the second half of, or the
+   * cell itself. `getSelection` skips a glyph's second half (it holds no character) and the
+   * renderer highlights a wide glyph from its first, so a selection starting on the second half
+   * would neither copy nor show the glyph it starts on.
+   */
+  wideGlyphStart(A) {
+    var E, C;
+    if (A.col === 0)
+      return A;
+    const Q = this.wasmTerm.getScrollbackLength(), B = A.absoluteRow < Q ? this.wasmTerm.getScrollbackLine(A.absoluteRow) : this.wasmTerm.getLine(A.absoluteRow - Q);
+    return ((E = B == null ? void 0 : B[A.col]) == null ? void 0 : E.width) === 0 && ((C = B[A.col - 1]) == null ? void 0 : C.width) === 2 ? { col: A.col - 1, absoluteRow: A.absoluteRow } : A;
   }
   /**
    * Normalize selection coordinates (handle backward selection)

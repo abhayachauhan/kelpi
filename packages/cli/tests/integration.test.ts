@@ -88,14 +88,15 @@ describe('dispatcher', () => {
         expect(bare.stdout).toBe('');
         expect(bare.stderr).toContain('Usage:');
 
-        const help = await runCLI(['--help']);
+        const help = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(help.code).toBe(0);
         expect(help.stdout).toBe('');
         expect(help.stderr).toContain('kelpi doctor [--json]');
     });
 
     it('names an unknown command before the usage block', async () => {
-        const result = await runCLI(['frobnicate']);
+        // A dead port, not the default socket: with no daemon the word cannot be a plugin verb.
+        const result = await runCLI(['frobnicate'], { port: await deadPort() });
         expect(result.code).toBe(1);
         expect(result.stderr.startsWith('Unknown command: frobnicate\n')).toBe(true);
     });
@@ -295,6 +296,273 @@ describe('request/response', () => {
         expect(key.stderr).toBe('kelpi pane send-key: empty reply (Kelpi version may not support this command)\n');
     });
 
+    /**
+     * #390: `--settle` and `--json` on capture, `--if-revision` on send/send-key, and the
+     * SCREEN_CHANGED refusal's own line. Without the new flags the payloads and output are the
+     * ones pinned above.
+     */
+    it('sends --settle as settle_ms and prints the capture reply minus ok under --json', async () => {
+        server.respond(() => ({
+            lines: [
+                {
+                    ok: true,
+                    text: 'line one\n',
+                    revision: 12,
+                    cursor: { row: 1, col: 4 },
+                    alt_screen: false,
+                    settled: true,
+                    pane_id: PANE,
+                    workspace_name: 'alpha'
+                }
+            ]
+        }));
+        const json = await runCLI(['pane', 'capture', '--settle', '500', '--json', '--target', PANE], {
+            port: server.port
+        });
+        expect(json.code).toBe(0);
+        expect(json.stderr).toBe('');
+        expect(json.stdout).toBe(
+            `{"alt_screen":false,"cursor":{"col":4,"row":1},"pane_id":"${PANE}","revision":12,"settled":true,"text":"line one\\n","workspace_name":"alpha"}\n`
+        );
+        expect(await lastRequest()).toEqual({ command: 'pane-capture', target: PANE, settle_ms: 500 });
+
+        // Without --json the output stays the raw text, even with --settle.
+        const raw = await runCLI(['pane', 'capture', '--settle', '250', '--target', PANE], { port: server.port });
+        expect(raw.code).toBe(0);
+        expect(raw.stdout).toBe('line one\n');
+        expect(await lastRequest()).toEqual({ command: 'pane-capture', target: PANE, settle_ms: 250 });
+    });
+
+    it('stretches the reply timeout by the daemon settle cap, whatever --settle asks, and only under --settle', async () => {
+        // The reply lands after the 1 s KELPI_REPLY_TIMEOUT, and after 1 s + the small 500 ms wait
+        // rounded up, but inside 1 s + the 10 s cap: a busy pane is answered only when the cap fires.
+        server.respond(() => ({ lines: [{ ok: true, text: 'quiet\n', revision: 3 }], delayMs: 2500 }));
+        const env = { KELPI_REPLY_TIMEOUT: '1' };
+        const [settled, small, plain] = await Promise.all([
+            runCLI(['pane', 'capture', '--settle', '7000', '--target', PANE], { port: server.port, env }),
+            runCLI(['pane', 'capture', '--settle', '500', '--target', PANE], { port: server.port, env }),
+            runCLI(['pane', 'capture', '--target', PANE], { port: server.port, env })
+        ]);
+        expect(settled.code).toBe(0);
+        expect(settled.stderr).toBe('');
+        expect(settled.stdout).toBe('quiet\n');
+        expect(small.code).toBe(0);
+        expect(small.stderr).toBe('');
+        expect(small.stdout).toBe('quiet\n');
+        expect(plain.code).toBe(1);
+        expect(plain.stdout).toBe('');
+        expect(plain.stderr).toContain('kelpi pane capture: no response from Kelpi');
+    });
+
+    it('rejects a --settle that is not a positive integer before touching the socket', async () => {
+        for (const value of ['0', '-5', 'abc']) {
+            const result = await runCLI(['pane', 'capture', '--target', PANE, '--settle', value], { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stdout).toBe('');
+            expect(result.stderr).toBe('kelpi pane capture: --settle must be a positive integer\n');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('sends --if-revision as if_revision on pane send and send-key, 0 included', async () => {
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, bare: false, revision: 7 }] }));
+        const send = await runCLI(['pane', 'send', '--if-revision', '7', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(send.code).toBe(0);
+        expect(send.stderr).toBe('');
+        expect(send.stdout).toBe(`sent to ${PANE}\n`);
+        expect(await lastRequest()).toEqual({ command: 'pane-send', target: PANE, text: 'hello', bare: false, if_revision: 7 });
+
+        const zero = await runCLI(['pane', 'send', '--target', PANE, '--if-revision', '0', '--json', 'hello'], {
+            port: server.port
+        });
+        expect(zero.stdout).toBe(`{"bare":false,"pane_id":"${PANE}","revision":7}\n`);
+        expect(await lastRequest()).toEqual({ command: 'pane-send', target: PANE, text: 'hello', bare: false, if_revision: 0 });
+
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, key: 'enter', revision: 7 }] }));
+        const key = await runCLI(['pane', 'send-key', '--if-revision', '7', '--target', PANE, 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(0);
+        expect(key.stderr).toBe('');
+        expect(key.stdout).toBe(`sent enter to ${PANE}\n`);
+        expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 7 });
+
+        const keyZero = await runCLI(['pane', 'send-key', '--target', PANE, '--if-revision', '0', 'enter'], {
+            port: server.port
+        });
+        expect(keyZero.code).toBe(0);
+        expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 0 });
+    });
+
+    it('sends a 13-digit --if-revision as a number on pane send and send-key', async () => {
+        // Revisions are seeded from a millisecond clock, so values this size are the normal case.
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, bare: false, revision: 1760000000123 }] }));
+        const send = await runCLI(['pane', 'send', '--target', PANE, '--if-revision', '1760000000123', 'y'], {
+            port: server.port
+        });
+        expect(send.code).toBe(0);
+        expect(send.stderr).toBe('');
+        expect(await lastRequest()).toEqual({
+            command: 'pane-send',
+            target: PANE,
+            text: 'y',
+            bare: false,
+            if_revision: 1760000000123
+        });
+
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, key: 'enter', revision: 1760000000123 }] }));
+        const key = await runCLI(['pane', 'send-key', '--target', PANE, '--if-revision', '1760000000123', 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(0);
+        expect(key.stderr).toBe('');
+        expect(await lastRequest()).toEqual({ command: 'pane-send-key', target: PANE, key: 'enter', if_revision: 1760000000123 });
+    });
+
+    it('rejects an --if-revision that is not a non-negative integer before touching the socket', async () => {
+        for (const value of ['-1', 'abc']) {
+            const send = await runCLI(['pane', 'send', '--target', PANE, '--if-revision', value, 'hello'], {
+                port: server.port
+            });
+            expect(send.code).toBe(1);
+            expect(send.stdout).toBe('');
+            expect(send.stderr).toBe('kelpi pane send: --if-revision must be a non-negative integer\n');
+
+            const key = await runCLI(['pane', 'send-key', '--target', PANE, '--if-revision', value, 'enter'], {
+                port: server.port
+            });
+            expect(key.code).toBe(1);
+            expect(key.stdout).toBe('');
+            expect(key.stderr).toBe('kelpi pane send-key: --if-revision must be a non-negative integer\n');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('rejects a trailing --if-revision with no value instead of typing it unguarded', async () => {
+        const send = await runCLI(['pane', 'send', '--target', PANE, 'hello', '--if-revision'], { port: server.port });
+        expect(send.code).toBe(1);
+        expect(send.stdout).toBe('');
+        expect(send.stderr).toBe('kelpi pane send: --if-revision must be a non-negative integer\n');
+
+        const key = await runCLI(['pane', 'send-key', '--target', PANE, 'enter', '--if-revision'], {
+            port: server.port
+        });
+        expect(key.code).toBe(1);
+        expect(key.stdout).toBe('');
+        expect(key.stderr).toBe('kelpi pane send-key: --if-revision must be a non-negative integer\n');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('warns on stderr when a guarded send is acked without a revision (an older Kelpi)', async () => {
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, bare: false }] }));
+        const send = await runCLI(['pane', 'send', '--if-revision', '3', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(send.code).toBe(0);
+        expect(send.stdout).toBe(`sent to ${PANE}\n`);
+        expect(send.stderr).toBe('kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded\n');
+
+        const json = await runCLI(['pane', 'send', '--if-revision', '3', '--json', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(json.code).toBe(0);
+        expect(json.stdout).toBe(`{"bare":false,"pane_id":"${PANE}"}\n`);
+        expect(json.stderr).toBe('kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded\n');
+
+        // Without the flag nothing was asked, so nothing to warn about.
+        const plain = await runCLI(['pane', 'send', '--target', PANE, 'hello'], { port: server.port });
+        expect(plain.code).toBe(0);
+        expect(plain.stderr).toBe('');
+
+        server.respond(() => ({ lines: [{ ok: true, pane_id: PANE, key: 'enter' }] }));
+        const key = await runCLI(['pane', 'send-key', '--if-revision', '3', '--target', PANE, 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(0);
+        expect(key.stdout).toBe(`sent enter to ${PANE}\n`);
+        expect(key.stderr).toBe('kelpi pane send-key: this Kelpi did not check --if-revision; the key was sent unguarded\n');
+
+        // The empty-reply success shim: the daemon could not have checked either.
+        server.respond(() => ({ silent: true }));
+        const empty = await runCLI(['pane', 'send', '--if-revision', '3', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(empty.code).toBe(0);
+        expect(empty.stdout).toBe('');
+        expect(empty.stderr).toBe('kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded\n');
+    });
+
+    it('names the current revision when the daemon refuses a send because the screen changed', async () => {
+        server.respond(() => ({
+            lines: [{ ok: false, error: 'screen changed', code: 'SCREEN_CHANGED', revision: 9 }]
+        }));
+        const send = await runCLI(['pane', 'send', '--if-revision', '7', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(send.code).toBe(1);
+        expect(send.stdout).toBe('');
+        expect(send.stderr).toBe('kelpi pane send: screen changed (revision 9)\n');
+
+        const key = await runCLI(['pane', 'send-key', '--if-revision', '7', '--target', PANE, 'enter'], {
+            port: server.port
+        });
+        expect(key.code).toBe(1);
+        expect(key.stdout).toBe('');
+        expect(key.stderr).toBe('kelpi pane send-key: screen changed (revision 9)\n');
+
+        const json = await runCLI(['pane', 'send', '--if-revision', '7', '--json', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(json.code).toBe(1);
+        expect(json.stdout).toBe('');
+        expect(json.stderr).toBe('kelpi pane send: screen changed (revision 9)\n');
+
+        // A refusal without a usable revision still gets the line, with a placeholder.
+        server.respond(() => ({ lines: [{ ok: false, error: 'screen changed', code: 'SCREEN_CHANGED' }] }));
+        const unknown = await runCLI(['pane', 'send', '--if-revision', '7', '--target', PANE, 'hello'], {
+            port: server.port
+        });
+        expect(unknown.code).toBe(1);
+        expect(unknown.stdout).toBe('');
+        expect(unknown.stderr).toBe('kelpi pane send: screen changed (revision ?)\n');
+
+        // Any other refusal keeps its existing wording.
+        server.respond(() => ({ lines: [{ ok: false, error: "no pane matched target 'ghost'" }] }));
+        const other = await runCLI(['pane', 'send-key', '--if-revision', '7', '--target', 'ghost', 'enter'], {
+            port: server.port
+        });
+        expect(other.code).toBe(1);
+        expect(other.stderr).toBe("kelpi pane send-key: no pane matched target 'ghost'\n");
+    });
+
+    it('mentions --settle, --json and --if-revision in the capture, send and send-key help', async () => {
+        const capture = await runCLI(['pane', 'capture', '--help'], { port: server.port });
+        expect(capture.code).toBe(0);
+        expect(capture.stdout).toContain('[--settle <ms>] [--json]');
+        expect(capture.stdout).toContain('--settle <ms>               Wait until the pane has had no output for <ms>');
+        expect(capture.stdout).toContain('--json                      Print the structured reply (text, revision, cursor,');
+
+        const send = await runCLI(['pane', 'send', '--help'], { port: server.port });
+        expect(send.code).toBe(0);
+        expect(send.stdout).toContain('[--if-revision <n>]');
+        expect(send.stdout).toContain('--if-revision <n>           Send only if the pane\'s screen revision is still n');
+
+        // send-key has no long help: its one usage line goes to stderr, exit 1, as before.
+        const key = await runCLI(['pane', 'send-key', '--help'], { port: server.port });
+        expect(key.code).toBe(1);
+        expect(key.stderr).toContain(
+            'Usage: kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>'
+        );
+
+        const global = await runCLI(['--help']);
+        expect(global.stderr).toContain('kelpi pane send [--bare] [--if-revision <n>] --target');
+        expect(global.stderr).toContain('kelpi pane send-key [--if-revision <n>] --target');
+        expect(global.stderr).toContain('[--scrollback] [--settle <ms>] [--json]');
+        expect(server.requests).toHaveLength(0);
+    });
+
     it('formats the resize ack as a whole-percent share', async () => {
         server.respond(() => ({
             lines: [{ ok: true, pane_id: PANE, workspace_name: 'alpha', target_share: 0.7499 }]
@@ -464,7 +732,8 @@ describe('kelpi event', () => {
             pane_id: PANE,
             title: 'Codex',
             body: 'Approval requested: Bash',
-            agent: 'codex'
+            agent: 'codex',
+            tool_name: 'Bash'
         });
     });
 
@@ -496,6 +765,160 @@ describe('kelpi event', () => {
         const loud = await runCLI(['event', 'stop'], { port, paneID: PANE, env: { ...noRetry, KELPI_VERBOSE_HOOKS: '1' } });
         expect(loud.code).toBe(0);
         expect(loud.stderr).toContain('Warning: kelpi event stop:');
+    });
+});
+
+describe('nested workspaces (app-state-core §2.9)', () => {
+    it('creates under --parent, or under the caller pane’s workspace with --nested', async () => {
+        server.respond(() => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false, parent_id: OTHER, parent_name: 'boss' }]
+        }));
+        const named = await runCLI(['workspace', 'create', '--name', 'worker', '--parent', 'boss'], { port: server.port });
+        expect(named.code).toBe(0);
+        expect(named.stdout).toBe(`created workspace worker (${PANE}) nested under boss\n`);
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'worker', parent: 'boss' });
+
+        const nested = await runCLI(['workspace', 'create', '--name', 'worker', '--nested'], {
+            port: server.port,
+            paneID: OTHER
+        });
+        expect(nested.code).toBe(0);
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', name: 'worker', parent_pane_id: OTHER });
+    });
+
+    it('refuses conflicting flags, and --nested outside a pane, before sending anything', async () => {
+        const both = await runCLI(['workspace', 'create', '--parent', 'boss', '--nested'], { port: server.port, paneID: PANE });
+        expect(both.code).toBe(1);
+        expect(both.stderr).toContain("can't take both --parent and --nested");
+        const grouped = await runCLI(['workspace', 'create', '--parent', 'boss', '--group', 'squad'], { port: server.port });
+        expect(grouped.code).toBe(1);
+        expect(grouped.stderr).toContain("follows its parent's group");
+        const outside = await runCLI(['workspace', 'create', '--nested'], { port: server.port });
+        expect(outside.code).toBe(1);
+        expect(outside.stderr).toContain('must run inside a Kelpi pane');
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('fails when a daemon that predates nesting created the workspace at the top level', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspace_id: PANE, workspace_name: 'worker', muted: false }] }));
+        const result = await runCLI(['workspace', 'create', '--name', 'worker', '--parent', 'boss'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain('the daemon did not nest the workspace');
+    });
+
+    it('defers a nested worktree’s source repo to the parent’s group, with the cwd as fallback', async () => {
+        const home = scratchHome();
+        server.respond(() => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'fix', worktree_path: '/tmp/wt/fix', branch: 'fix', parent_id: OTHER, parent_name: 'boss' }]
+        }));
+        await runCLI(['workspace', 'create', '--worktree', 'fix', '--parent', 'boss'], { port: server.port, cwd: home });
+        expect(await lastRequest()).toEqual({ command: 'workspace-create', worktree: 'fix', parent: 'boss', path: home });
+    });
+
+    it('nests an existing workspace with move --parent, and reports a refusal', async () => {
+        server.respond((request) =>
+            request['parent'] === 'worker'
+                ? { lines: [{ ok: false, error: "'worker' is nested itself; workspaces nest one level deep" }] }
+                : { lines: [{ ok: true, workspace_id: PANE, workspace_name: 'w2', parent_id: OTHER, parent_name: 'boss', index: 1 }] }
+        );
+        const nested = await runCLI(['workspace', 'move', 'w2', '--parent', 'boss', '--index', '1'], { port: server.port });
+        expect(nested.code).toBe(0);
+        expect(nested.stdout).toBe('nested workspace w2 under boss\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-nest', name: 'w2', parent: 'boss', index: 1 });
+
+        const refused = await runCLI(['workspace', 'move', 'w2', '--parent', 'worker'], { port: server.port });
+        expect(refused.code).toBe(1);
+        expect(refused.stderr).toContain('nest one level deep');
+
+        const conflicting = await runCLI(['workspace', 'move', 'w2', '--parent', 'boss', '--top-level'], { port: server.port });
+        expect(conflicting.code).toBe(1);
+        expect(conflicting.stderr).toContain('only one of --group, --top-level and --parent');
+    });
+
+    it('deletes with --cascade and reports the nested workspaces it took', async () => {
+        server.respond(() => ({
+            lines: [{ ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER] }]
+        }));
+        const human = await runCLI(['workspace', 'delete', 'boss', '--cascade'], { port: server.port });
+        expect(human.stdout).toBe('deleted workspace boss and 1 nested workspace\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-delete', name: 'boss', force: false, cascade: true });
+        const json = await runCLI(['workspace', 'delete', 'boss', '--cascade', '--json'], { port: server.port });
+        expect(JSON.parse(json.stdout)).toEqual([
+            { id: 'boss', ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER] }
+        ]);
+    });
+
+    it('lists one parent’s nested workspaces with --parent', async () => {
+        server.respond(() => ({ lines: [{ ok: true, workspaces: [], parent_id: OTHER, parent_name: 'boss' }] }));
+        const result = await runCLI(['workspace', 'list', '--parent', 'boss', '--json'], { port: server.port });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe('[]\n');
+        expect(await lastRequest()).toEqual({ command: 'workspace-list', parent: 'boss' });
+    });
+
+    it('never lists everything for --parent: an unfiltered (older daemon) reply fails, printing nothing', async () => {
+        server.respond(() => ({
+            lines: [{ ok: true, workspaces: [{ id: PANE, name: 'a' }, { id: OTHER, name: 'b' }] }]
+        }));
+        const result = await runCLI(['workspace', 'list', '--parent', 'boss', '--json'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain('the daemon did not apply --parent');
+    });
+
+    it('refuses an empty or whitespace --parent before sending anything', async () => {
+        for (const args of [
+            ['workspace', 'list', '--parent', ''],
+            ['workspace', 'create', '--name', 'stray', '--parent', '  '],
+            ['workspace', 'move', 'w2', '--parent', '']
+        ]) {
+            const result = await runCLI(args, { port: server.port });
+            expect(result.code).toBe(1);
+            expect(result.stderr).toContain('--parent needs a workspace name or id (it was empty)');
+        }
+        expect(server.requests).toHaveLength(0);
+    });
+
+    it('says the parent was lost, not that the daemon is old, when it went away during a worktree create', async () => {
+        server.respond(() => ({
+            lines: [
+                {
+                    ok: true,
+                    workspace_id: PANE,
+                    workspace_name: 'fix',
+                    muted: false,
+                    worktree_path: '/tmp/wt/fix',
+                    branch: 'fix',
+                    parent_lost: true,
+                    parent_lost_reason: "parent 'boss' was deleted while the workspace was being created"
+                }
+            ]
+        }));
+        const result = await runCLI(['workspace', 'create', '--worktree', 'fix', '--parent', 'boss'], { port: server.port });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain("parent 'boss' was deleted while the workspace was being created");
+        expect(result.stderr).toContain('was created at the top level');
+        expect(result.stderr).not.toContain('restart it on this build');
+    });
+
+    it('counts a later target the cascade already took as deleted, not as a failure', async () => {
+        server.respond((request) =>
+            request['name'] === 'boss'
+                ? { lines: [{ ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER], deleted_child_names: ['worker'] }] }
+                : { lines: [{ ok: false, error: `workspace not found: ${String(request['name'])}` }] }
+        );
+        const human = await runCLI(['workspace', 'delete', 'boss', 'worker', '--cascade'], { port: server.port });
+        expect(human.code).toBe(0);
+        expect(human.stdout).toBe('deleted workspace boss and 1 nested workspace\nworkspace worker was already deleted with boss\n');
+
+        // By id as well (any case), and a target that never existed still fails.
+        const json = await runCLI(['workspace', 'delete', 'boss', OTHER.toLowerCase(), 'ghost', '--cascade', '--json'], { port: server.port });
+        expect(json.code).toBe(1);
+        expect(JSON.parse(json.stdout)).toEqual([
+            { id: 'boss', ok: true, workspace_id: PANE, workspace_name: 'boss', deleted_children: [OTHER] },
+            { id: OTHER.toLowerCase(), ok: true, deleted_with: 'boss' },
+            { id: 'ghost', ok: false, error: 'workspace not found: ghost' }
+        ]);
     });
 });
 
@@ -1124,7 +1547,7 @@ describe('kelpi document csv actions', () => {
         expect(help.stdout).toContain("csv-edit <pane-id> --generation <token> (--ops '<json>' | --ops-file <path>)");
         expect(help.stdout).toContain('wait up to 10 minutes');
         expect(help.stdout).toContain('kelpi pane list --json');
-        const usage = await runCLI(['--help']);
+        const usage = await runCLI(['--help'], { env: { KELPI_REQUIRE_SOCKET: '1' } });
         expect(usage.stderr).toContain('kelpi document get|watch|edit|save|refresh|mode|csv-state|rows|');
     });
 
@@ -1787,7 +2210,7 @@ describe('workspace rename', () => {
         const unknown = await runCLI(['workspace', 'retitle'], { port: server.port });
         expect(unknown.code).toBe(1);
         expect(unknown.stderr).toContain('Valid actions: list, create, move, delete, profile, label, mute, rename');
-        expect(server.requests).toHaveLength(0);
+        expect(server.requests).toEqual([{ command: 'plugin', action: 'cli-list', text: '{}' }]);
     });
 });
 

@@ -269,6 +269,9 @@ included) and silently drop the event when no workspace owns the pane. The handl
 `packages/daemon/src/handlers/app/events.ts`; the per-pane status machine they feed is
 `packages/core/src/agent/machine.ts`.
 
+Each line the store applies also publishes one `agent.event` to plugin backends and views, after
+the state change and whether or not a notification is broadcast (agent-lifecycle.md §7.7).
+
 Pane status values: `"idle" | "running" | "waitingForInput"`.
 
 ### 3.1 `start` → agentStarted(paneID, agent)
@@ -351,6 +354,34 @@ the ending `sessionID`**, issue #178) and then **persist state** — the cleared
 survive the next launch or a restart would `--resume` a dead session. A matching end also
 clears `agentProfileName` together with the id, so a later resume can never spawn under a
 stale profile (`machine.ts:164`).
+
+### 3.7 `permission-request` → the `kelpi.agent.permissions` provider (request/response)
+
+The one agent hook verb with a reply (#388, wire-protocol.md §6.1.1), in
+`packages/daemon/src/handlers/app/permissions.ts`. It changes no pane state.
+
+1. A pane whose agent events are muted (#372, as in §3) replies
+   `{"ok":true,"behavior":"abstain"}` without asking any provider.
+2. Resolve the pane with the same parked-inclusive lookup as §3. No owning workspace:
+   `{"ok":false,"error":"unknown pane"}`.
+3. Build the `decide` args from the request (`toolName`, `toolInput`, and `mcpServer`, `cwd`,
+   `permissionMode` when present) and the pane (`paneID`, `workspaceID`, `agent` = the pane's
+   agent kind, default `claude`). `sessionID` is the line's own `session_id` when it carried
+   one (its dual-fire binds the pane only after this handler ran), else the pane's bound
+   session id, when there is one.
+4. Call `deps.decidePermission(args, signal)`. Boot implements it (`boot/compose.ts`) by
+   naming the service's active provider (the user's selection, else
+   `kelpi.agent.permissions.bundled`) and calling the plugin service with it explicitly, with
+   the pane and workspace as the invocation context.
+5. Wait at most 2000 ms (`PERMISSION_DEADLINE_MS`). On time with a valid result, reply
+   `{"ok":true,"behavior",…,"provider"}`; `message` rides along only on `deny`. A timeout
+   (which also aborts `signal`), a thrown error or a malformed result replies `abstain` with
+   the same `provider`, after one `WARNING: permission-request: provider <id> …` log line.
+6. Log the decision: `permission-request: pane <id> tool <name>: <behavior> (provider <id>)`.
+   The tool input is never logged.
+7. Publish one `agent.event` of type `permission-request` through `deps.emitAgentEvent`
+   (agent-lifecycle.md §7.7), unless the pane's agent events are muted by then or the pane is
+   gone. Steps 1 and 2 publish none.
 
 ---
 
@@ -472,12 +503,21 @@ label change synchronously, replies:
 
 ### 4.5 `pane-send` → handlePaneSend
 
-Inputs: `paneID?`, `target` (required by the wire), `text`, `workspaceFilter?`, `bare`.
-Resolve via `resolvePaneTarget`. Success reply (sent **before** the PTY write):
+Inputs: `paneID?`, `target` (required by the wire), `text`, `workspaceFilter?`, `bare`,
+`ifRevision?`. Resolve via `resolvePaneTarget`. Then the revision guard (#390,
+`checkRevision`, `input.ts:99`): when `ifRevision` is present and differs from the pane's
+current screen revision (`term.revision`, 0 for a pane with no terminal state), answer
+`{"ok":false,"error":"screen changed","code":"SCREEN_CHANGED","revision":<current>}` and write
+nothing (`input.ts:37-41`). The check, the ack and the write run in one synchronous turn, with
+no await between them. Success reply (sent **before** the PTY write):
 
 ```json
 {"ok": true, "pane_id": "<uuid>", "workspace_id": "<uuid>", "workspace_name": "dev", "bare": false, "label": "worker-1"}
 ```
+
+When `ifRevision` was given and matched, the ack also carries `"revision": <matched value>`
+(before `label`), which tells a caller a daemon that checked from one that ignored the field.
+Without `ifRevision` the ack is exactly as above.
 
 Then write to the pane's PTY through the paste pipeline (`sendText` in
 `packages/daemon/src/pty/input.ts:136`; terminal-surface.md §9.1). Both bare and non-bare
@@ -495,7 +535,7 @@ The same write helper is reused by the web-pane element picker (which defaults t
 
 ### 4.6 `pane-send-key` → handlePaneSendKey
 
-Inputs: `paneID?`, `target`, `key`, `workspaceFilter?`.
+Inputs: `paneID?`, `target`, `key`, `workspaceFilter?`, `ifRevision?`.
 
 **Key validation runs before target resolution** so an unknown key never resolves (or
 touches) a pane. `normalizedKey = key.toLowerCase()`; the allowlist (order matters for the
@@ -507,11 +547,15 @@ enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c
 
 Unknown → `{ok:false,error:"unknown key '<key>' (valid: enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c)"}`.
 
-Then resolve via `resolvePaneTarget`; success reply (before the keystroke):
+Then resolve via `resolvePaneTarget`, then the same revision guard as §4.5 (after key
+validation and resolution, before the ack and the key; `input.ts:72-76`: a stale `ifRevision`
+answers `SCREEN_CHANGED` and sends nothing). Success reply (before the keystroke):
 
 ```json
 {"ok": true, "pane_id": "...", "workspace_id": "...", "workspace_name": "dev", "key": "enter", "label": "worker-1"}
 ```
+
+A matched `ifRevision` adds `"revision": <matched value>` before `label`.
 
 Then synthesize the named key on the pane's terminal, outside any bracketed-paste
 envelope. Byte-mapped keys (enter/return `\r`, tab `\t`, escape `\x1b`, space, backspace,
@@ -521,11 +565,14 @@ text so the terminal encodes them per DECCKM mode (`\eOA` vs `\e[A`).
 
 ### 4.7 `pane-capture` → handlePaneCapture
 
-Inputs: `paneID?`, `target?`, `workspaceFilter?`, `lines?`, `includeScrollback`.
+Inputs: `paneID?`, `target?`, `workspaceFilter?`, `lines?`, `includeScrollback`, `settleMs?`.
 
 Validation order:
 1. `lines != null && lines <= 0` → `error("lines must be a positive integer (got {lines})")`.
    (The CLI pre-validates, but raw socket clients can send anything.)
+1a. `settleMs != null && settleMs <= 0` → `error("settle_ms must be a positive integer (got {settleMs})")`
+   (`input.ts:116`). A value above the cap is not an error: the term service clamps it to
+   `CAPTURE_SETTLE_CAP_MS` (10000).
 2. `resolvePaneTarget` (no `--target` ⇒ capture the caller's own pane, requires
    KELPI_PANE_ID).
 3. Defensive pane lookup → `error("pane not found: {uuid}")`.
@@ -533,16 +580,31 @@ Validation order:
    actual type raw value: `markdown`/`scratchpad`/`diff`/`web`).
 5. Flush a deferred first spawn: a pane whose first spawn is still waiting for a client's
    geometry has no server-side terminal yet, so the handler runs that spawn now
-   (`ctx.spawn.flushSpawn(paneID)`, `handlers/pane/input.ts:95`) rather than answering with
+   (`ctx.spawn.flushSpawn(paneID)`, `handlers/pane/input.ts:136`) rather than answering with
    an empty screen. A no-op for every other pane.
 
 Without a reply handle the command is a no-op (a pure read has nothing to drop;
-`input.ts:74`). Then asynchronously read the pane's terminal contents (viewport, or viewport
+`input.ts:108`). Then asynchronously read the pane's terminal contents (viewport, or viewport
 + full scrollback when `includeScrollback`). If the surface died mid-read →
 `{ok:false,error:"pane closed during capture"}`; if the read throws while the pane still
 exists (an emulator fault) → `{ok:false,error:"pane capture failed: <error>"}`
-(`input.ts:136`). Either way the client gets a line rather than waiting for an EOF that
-never comes. Apply `tailLines` when `lines` given:
+(`input.ts:199-209`). Either way the client gets a line rather than waiting for an EOF that
+never comes.
+
+The async read (#390, `readCapture`, `input.ts:165-229`): when `settleMs` is given, first wait
+on `term.settle(paneID, settleMs)`, which resolves `true` once the pane has had no output for
+that long (counted from the call, restarted by every byte fed or resize) and `false` when the
+cap is reached first (or when the pane's terminal state is disposed mid-wait, since no quiet
+was seen). Then `term.readScreen(paneID, opts)` (`term/service.ts`) drains the pane's pending
+VT writes and reads the text, the revision and the cursor (active screen) in the same turn as
+the drain loop's last "queue empty" check, with no await after it. So a byte fed after the
+flush is never counted in the revision without being in the text, which `await flush()` and
+then a read could not promise: a feed could run in the hop before the read resumed. A
+pane that closes during the settle wait takes the same `pane closed during capture` path. A
+seam without `readScreen` falls back to `flush()` then `capture` / `revision` /
+`screenCursor`, and one without `flush` to `captureAsync` / `capture`. Missing reads degrade to
+revision 0, cursor `{0,0}`, `alt_screen` false and `settled` true. Apply `tailLines` when
+`lines` given:
 
 ```
 tailLines(text, n):
@@ -557,8 +619,11 @@ tailLines(text, n):
 Success reply:
 
 ```json
-{"ok": true, "pane_id": "...", "workspace_id": "...", "workspace_name": "dev", "text": "…captured lines…\n", "label": "worker-1"}
+{"ok": true, "pane_id": "...", "workspace_id": "...", "workspace_name": "dev", "text": "…captured lines…\n", "revision": 42, "cursor": {"row": 23, "col": 2}, "alt_screen": false, "label": "worker-1"}
 ```
+
+`revision`, `cursor` and `alt_screen` are always present. `settled` (bool) is added after
+`alt_screen` only when `settleMs` was given.
 
 ### 4.8 `pane-move` (directional form) → fire-and-forget
 
@@ -872,15 +937,24 @@ focused pane's own renderer is not on the alternate screen (`client/src/app/clea
 
 ### 6.1 `workspace-list` → handleWorkspaceList (pure read)
 
-Input: `group?` (name-or-id filter). Requires a reply handle.
+Input: `group?` (name-or-id filter), `parent?` (name-or-id filter; app-state-core.md §2.9).
+Requires a reply handle.
+
+- `parent` given → an empty or whitespace one is `error("parent must name a workspace (got an
+  empty value)")` (never "no filter": that would list every workspace); otherwise strict
+  `resolveWorkspace` or the §6.4 resolution errors (`workspace not found: …` / `workspace name
+  is ambiguous: … (use the id)`). The filter set is that workspace's `childOrder`, and the reply
+  adds top-level `parent_id` / `parent_name` for the resolved parent, so a caller can tell it
+  from an older daemon's unfiltered reply. With `group` as well, both apply.
 
 - Non-empty `group` filter → `resolveGroup` (strict) or
   `error("no group matches '{filter}'")` — an unknown/ambiguous group is an **error**, not
   an empty list, so scripts can tell "no such group" from "empty group". The filter set is
-  the group's `childOrder` members.
+  the group's `childOrder` members and the workspaces nested under them.
 - Ordering: walk the sidebar's top-level order; a workspace entry contributes itself, a
   group entry contributes its members in child order (**regardless of the group's
-  collapsed state** — unlike the GUI's visible order). Dedupe throughout. Then append any
+  collapsed state**, unlike the GUI's visible order), and every workspace is followed by
+  the workspaces nested under it (regardless of `childrenCollapsed`). Dedupe throughout. Then append any
   workspace unreachable through the top-level order, in state order, so a recoverable
   ordering inconsistency can never hide a workspace from the CLI. Finally apply the group
   filter, preserving order.
@@ -901,7 +975,8 @@ Entry shape (timestamps plain ISO 8601):
     "icon": "emoji:🔥",                                   // absent for the letter avatar (§6.9)
     "last_activity_at": "2026-08-18T02:05:00Z",           // max of the panes' lastActivityAt; absent with no panes
     "agent_session_id": "…",                              // the FIRST pane carrying one
-    "group_id": "…", "group_name": "Client X",            // absent for top-level workspaces
+    "group_id": "…", "group_name": "Client X",            // absent for top-level workspaces; a nested one reports its parent's group
+    "parent_id": "…", "parent_name": "orchestrator",      // absent unless nested (app-state-core.md §2.9)
     "repos": [                                            // absent when it has no repo associations
       {"repo_id": "…", "repo_name": "kelpi", "repo_path": "/code/kelpi",   // name/path absent if unregistered
        "worktree_path": "/code/kelpi", "branch": "main"}                   // branch absent when unknown
@@ -923,6 +998,30 @@ can tell a daemon that predates the field (it drops it and creates the workspace
 icon fails the create before any branch runs (no workspace, group or worktree is made); then
 carried on the `create-workspace` action, so the workspace has it from its first frame; and
 echoed as `icon` in every success reply, but only when one was set.
+
+Nesting (app-state-core.md §2.9): `parent?` (workspace name-or-id) and `parentPaneID?` (a pane
+UUID; the workspace holding it) are resolved after the icon and before any branch, so a bad
+one creates nothing: an empty or whitespace `parent` → `error("parent must name a workspace (got
+an empty value)")` (an empty `parentPaneID` likewise); both given → `error("give either parent or
+parent_pane_id, not both")`;
+either with a non-empty `group` → `error("a nested workspace follows its parent's group: pass a
+parent or a group, not both")`; `parent` unresolved → `error("parent " + <the §6.4 resolution
+error>)`; pane unknown → `error("no pane matches '{id}', so there is no workspace to nest
+under")`; parent nested itself → the `nestingRefusal` text. The resolved `parentID` rides on the
+`create-workspace` action in every branch (so the reducer places the workspace in the parent's
+`childOrder`); the group-default repository and worktree switch come from the parent's group
+(`groupIDForWorkspace(parent)`), so a nested create reaches (d) or (a) exactly like a create in
+that group, but no group is ever created or echoed. Every success reply of a nested create
+carries `parent_id` / `parent_name` read back from the store (on (b), from the resolved parent,
+since it replies before the effect).
+
+(a) and (d) await git before they create anything, and the parent can be deleted, or nested
+under another workspace, meanwhile, so both check it again (`lostParent`) once git is done. (d)
+has created nothing, so it fails whole with `parent '<name>' was deleted while the workspace was
+being created` (or `… changed while …: <nestingRefusal>`), saving any repo it registered. (a) has
+its worktree on disk, so, like a cancel that arrives after git (graft-git.md §8.5.2), it completes
+at the top level and the reply carries `parent_lost: true` and `parent_lost_reason` instead of
+`parent_id`.
 
 Four branches, checked in this order ((d) is checked before (b) and (c)):
 
@@ -1087,9 +1186,28 @@ off, moving a workspace into a collapsed group leaves the group collapsed around
 just swallowed (`workspaces.ts:528`). The sidebar's drag-and-drop is this same verb, so the
 setting is applied at the verb rather than at the gesture and governs the CLI form as well.
 
+### 6.3a `workspace-nest` → handleWorkspaceNest (request/response)
+
+Inputs: `nameOrID`, `parent` (name-or-id), `index?`. app-state-core.md §2.9.
+
+```
+ws = resolveWorkspace(nameOrID) or error(<the §6.4 resolution error>)
+if parent.trim() == "": error("parent must name a workspace (got an empty value)")
+parent = resolveWorkspace(parent) or error("parent " + <the §6.4 resolution error>)
+refusal = nestingRefusal(state, [ws.id], parent.id)   // nested parent / has children / itself
+if refusal: error(refusal)
+dispatch nest-workspaces([ws.id], parent.id, index)
+persist
+reply {"ok": true, "workspace_id", "workspace_name", "parent_id", "parent_name",
+       "index": <its position in the parent's childOrder after the move>}
+```
+
+Un-nesting is §6.3: `move-workspace-to-group` detaches from parent workspaces as well as groups.
+
 ### 6.4 `workspace-delete` → handleWorkspaceDelete
 
-Inputs: `nameOrID`, `force` (bool), and the worktree cleanup fields `worktree_paths`
+Inputs: `nameOrID`, `force` (bool), `cascade` (bool; app-state-core.md §2.9), and the worktree
+cleanup fields `worktree_paths`
 (string[]), `force_worktree_paths` (string[]), `prune_worktrees` (bool), `delete_branches`
 (bool), `batch_ids` (string[])
 (graft-git.md §8.7). (The CLI's bulk form loops one message per id; `--prune-worktree`
@@ -1120,6 +1238,17 @@ if !force and agents.total > 0:
   // Each nonzero bucket names its own count and kind; active_agents includes inactive sessions.
   return
 ```
+
+With `cascade`, `doomed = [ws, ...ws's live nested workspaces]` and every step covers all of
+them: the last-workspace guard is `workspaces.length <= doomed.length`; the agent guard sums the
+buckets across `doomed` (the error names `workspace {ws.name} and its nested workspace(s)
+have …`); `prepareDocumentClose`, the pane kills and `refreshSyncGroup` cover every doomed
+workspace; one `delete-workspaces` dispatch removes them together (so no child is promoted on
+the way); each is an owner of its own worktrees for the cleanup and is remembered for later
+batches; and the reply adds `"deleted_children": [<ids>]` and `"deleted_child_names": [<names>]`
+(index for index). Without `cascade` the reducer
+promotes the nested workspaces into the deleted one's slot. The GUI's `delete-workspace` maps
+its `cascade_children: true` onto `cascade`.
 
 The last-workspace guard has one caller allowed past it: the handler takes an `allowLast`
 flag and the guard is `state.workspaces.length <= 1 && !allowLast`
@@ -1294,7 +1423,9 @@ The icon reaches attached windows as a `workspace-upserted` event in the next st
 Requires a reply handle. Order: group ids appearing in the sidebar's top-level order
 (deduped — a corrupted order with a duplicate entry must not list a group twice), then any
 groups missing from that order appended in state order (never hide a group). Member lists
-follow each group's child order, skipping dangling ids.
+follow each group's child order, skipping dangling ids, and each member is followed by its live
+nested workspaces (app-state-core.md §2.9), as `{"id", "name", "parent_id", "parent_name"}`:
+they belong to the group, as `workspace-list --group` and `group-delete --cascade` treat them.
 
 ```jsonc
 {"ok": true, "groups": [
@@ -1320,7 +1451,9 @@ the wire (UI-only affordance).
 
 `resolveGroup(nameOrID)`; null ⇒ silent no-op. Rename dispatches the rename action with
 the new name; delete dispatches deletion with the `cascade` flag (without cascade,
-children promote to top level; with it, member workspaces are deleted too).
+children promote to top level, keeping the workspaces nested under them; with it, member
+workspaces and the workspaces nested under them are deleted too, and the panes of all of them
+are torn down; app-state-core.md §2.9).
 
 ### 7.4 `group-reorder` / `group-sort` → handleGroupReorder (shared)
 
@@ -1637,9 +1770,9 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-split / pane-create | `pane_id` (new pane), `workspace_id`, `workspace_name`, `label?` |
 | pane-close | `pane_id`, `workspace_id`, `workspace_name`, `label?` |
 | pane-name | `pane_id`, `workspace_id`, `workspace_name`, `label?` (omitted when cleared) |
-| pane-send | `pane_id`, `workspace_id`, `workspace_name`, `bare`, `label?` |
-| pane-send-key | `pane_id`, `workspace_id`, `workspace_name`, `key` (normalized), `label?` |
-| pane-capture | `pane_id`, `workspace_id`, `workspace_name`, `text`, `label?` |
+| pane-send | `pane_id`, `workspace_id`, `workspace_name`, `bare`, `revision?` (with `if_revision`), `label?` |
+| pane-send-key | `pane_id`, `workspace_id`, `workspace_name`, `key` (normalized), `revision?` (with `if_revision`), `label?` |
+| pane-capture | `pane_id`, `workspace_id`, `workspace_name`, `text`, `revision`, `cursor` (`{row, col}`), `alt_screen`, `settled?` (with `settle_ms`), `label?` |
 | pane-resize | `pane_id`, `workspace_id`, `workspace_name`, `split_path`, `ratio`, `target_share`, `label?` |
 | pane-font-size | `pane_id`, `workspace_id`, `workspace_name`, `font_size` (number, or `null` after a reset), `label?` |
 | pane-clear | `pane_id`, `workspace_id`, `workspace_name`, `cleared` (bool), `reason?` (`"alternate-screen"` or `"no-terminal"` when not cleared), `label?` |
@@ -1647,8 +1780,9 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | pane-list | `panes: [...]` |
 | pane-sync / pane-sync-exclude | `workspace_id`, `workspace_name`, `active`, `synced_pane_ids`, `excluded` |
 | workspace-list | `workspaces: [...]` |
-| workspace-create | `workspace_id`, `workspace_name`, `muted`, `icon?`, `group?` (+ `worktree_path`, `branch` on the worktree path) |
-| workspace-delete | `workspace_id`, `workspace_name`, `path?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
+| workspace-create | `workspace_id`, `workspace_name`, `muted`, `icon?`, `group?`, `parent_id?`, `parent_name?` (+ `worktree_path`, `branch` on the worktree path) |
+| workspace-nest | `workspace_id`, `workspace_name`, `parent_id`, `parent_name`, `index` |
+| workspace-delete | `workspace_id`, `workspace_name`, `path?`, `deleted_children?` (failure may add `active_agents`, `running`, `waiting`, `inactive`) |
 | workspace-label | `workspace_id`, `workspace_name`, `labels` |
 | workspace-mute | `workspace_id`, `workspace_name`, `muted` |
 | workspace-rename | `workspace_id`, `workspace_name` (the new name), `old_name` |
@@ -1659,6 +1793,7 @@ web-pane subsystem (see its spec): `web-open`, `web-navigate`, `web-url`, `web-b
 | graft-stop | `stopped: [...]`, `failed?: [...]` (`ok` false only when a stop failed; then also `error`, `error_kind`) |
 | graft-status | `sessions: [...]` |
 | ping | `version`, `build`, `pid`, `protocol`, `tcp?`, `compat?`, `pane_route?`, `http?`, `terminals`, `persistence?` |
+| permission-request | `behavior` (`allow`, `deny` or `abstain`), `message?` (deny only), `provider?` |
 
 Fire-and-forget (no reply ever): agent lifecycle events, `pane-move` (directional),
 `pane-move-to-workspace`, `workspace-move`, `workspace-profile`, `group-create`,

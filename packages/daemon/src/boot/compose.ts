@@ -1,7 +1,8 @@
 import { pluginAssetsRoute } from '../plugins/http.js';
 import { PluginService } from '../plugins/service.js';
 import { createPluginGitService } from '../plugins/git-service.js';
-import { pluginObject } from '@kelpi/protocol';
+import { BUNDLED_PERMISSIONS_PROVIDER, PERMISSIONS_SERVICE, PERMISSIONS_SERVICE_VERSION } from '../plugins/permissions-service.js';
+import { pluginObject, type JsonValue } from '@kelpi/protocol';
 /**
  * Composition root: every seam in `../seams.ts` gets its concrete implementation here, and
  * nothing else in the daemon knows how the pieces are wired.
@@ -1469,6 +1470,37 @@ export function createDaemon(options: DaemonOptions = {}): Daemon {
         persistNow,
         // A restart of old terminals (#372): the dying agent's hooks must not touch the pane.
         agentEventsMuted: (paneID) => mutedAgentPanes.has(paneID),
+        // #387: one `agent.event` per hook line, onto the plugin event bus (plugins only).
+        emitAgentEvent: (event) => {
+            pluginHost?.emitDaemonEvent('agent.event', event as unknown as JsonValue);
+        },
+        // #388: the provider is named up front and asked explicitly, so the reply and the log
+        // name the one that decided. Only a user-selected provider is ever active.
+        decidePermission: (args, signal) => {
+            const host = pluginHost;
+            if (host === undefined) {
+                return { provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.reject(new Error('plugin services are starting')) };
+            }
+            const service = host.services().find(
+                (entry) => entry['id'] === PERMISSIONS_SERVICE && entry['version'] === PERMISSIONS_SERVICE_VERSION
+            );
+            const active = service?.['activeProviderID'];
+            const provider = typeof active === 'string' ? active : BUNDLED_PERMISSIONS_PROVIDER;
+            const context = {
+                daemonID: host.daemonID,
+                ...(typeof args['paneID'] === 'string' ? { paneID: args['paneID'] } : {}),
+                ...(typeof args['workspaceID'] === 'string' ? { workspaceID: args['workspaceID'] } : {})
+            };
+            return {
+                provider,
+                result: host.callService(
+                    { service: PERMISSIONS_SERVICE, version: PERMISSIONS_SERVICE_VERSION, method: 'decide', args, provider },
+                    context,
+                    signal
+                )
+            };
+        },
+        log: (message) => log(message),
         spawnPane: (request) => {
             spawnPaneIfShell(ctx, request.workspaceID, request.paneID);
         },

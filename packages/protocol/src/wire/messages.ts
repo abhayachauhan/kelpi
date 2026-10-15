@@ -11,6 +11,7 @@
  * `session-end`, where the id IS the payload).
  */
 
+import type { JsonObject } from '../json.js';
 import type { PluginWireMessage } from '../plugins.js';
 import type { AgentKind, DropZone, MoveDirection, SplitDirection, WorkspaceColor } from './vocab.js';
 
@@ -33,6 +34,15 @@ export interface AgentStopMessage {
     command: 'stop';
     pane_id: string;
     background_tasks: number;
+    /**
+     * #387: the text of the agent's final reply (Claude's Stop `last_assistant_message`),
+     * non-empty, capped by the CLI at 64 KiB of UTF-8. Optional: absent from older CLIs.
+     */
+    last_assistant_message?: string | undefined;
+    /** #387: present (and `true`) only when the CLI cut `last_assistant_message` to its cap. */
+    last_assistant_message_truncated?: true | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
 }
 
 export interface AgentErrorMessage {
@@ -47,6 +57,15 @@ export interface AgentNotificationMessage {
     title: string;
     body: string;
     background_tasks: number;
+    /**
+     * #387: Claude's Notification `notification_type` (`permission_prompt`, `idle_prompt`,
+     * `elicitation_dialog`, ...), non-empty. Optional: absent from older CLIs.
+     */
+    notification_type?: string | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
+    /** #387: the tool a Codex PermissionRequest asks about, non-empty. Optional. */
+    tool_name?: string | undefined;
 }
 
 export interface SessionStartMessage {
@@ -60,12 +79,39 @@ export interface SessionStartMessage {
      * absent from older CLIs.
      */
     profile?: string | undefined;
+    /** #387: the hook's `transcript_path`, non-empty. Optional: absent from older CLIs. */
+    transcript_path?: string | undefined;
 }
 
 export interface SessionEndMessage {
     command: 'session-end';
     pane_id: string;
     session_id: string;
+}
+
+// ── 6.1.1 Agent permission requests (request/response; `pane_id` mandatory) ──────────
+
+/**
+ * #388: Claude's PermissionRequest hook, asking the selected `kelpi.agent.permissions`
+ * provider for a decision. The reply carries it; the CLI prints Claude's decision JSON.
+ */
+export interface PermissionRequestMessage {
+    command: 'permission-request';
+    pane_id: string;
+    /** Required non-empty: a line without it is dropped by the decode guard. */
+    tool_name: string;
+    /** The tool's arguments, a plain JSON object. Absent reads as `{}`. */
+    tool_input: JsonObject;
+    /** Present for MCP tools only. Optional non-empty strings, as are the two below. */
+    mcp_server?: string | undefined;
+    cwd?: string | undefined;
+    permission_mode?: string | undefined;
+    /**
+     * The hook's own session id, when the line carried one. Its §3.1 dual-fire binds it to the
+     * pane only after this message is handled, so the provider is told this one over the pane's
+     * earlier binding.
+     */
+    session_id?: string | undefined;
 }
 
 // ── 6.2 Pane commands ───────────────────────────────────────────────────────────────
@@ -105,6 +151,8 @@ export interface PaneSendMessage extends PaneTargetScope {
     target: string;
     text: string;
     bare: boolean;
+    /** Refuse (`SCREEN_CHANGED`) unless the pane's screen revision is still this one (#390). */
+    if_revision?: number | undefined;
 }
 
 export interface PaneSendKeyMessage extends PaneTargetScope {
@@ -112,6 +160,8 @@ export interface PaneSendKeyMessage extends PaneTargetScope {
     target: string;
     /** Raw wire value: validated (lowercased) by the handler, which errors rather than drops. */
     key: string;
+    /** Refuse (`SCREEN_CHANGED`) unless the pane's screen revision is still this one (#390). */
+    if_revision?: number | undefined;
 }
 
 export interface PaneResizeMessage extends PaneTargetScope {
@@ -189,6 +239,8 @@ export interface PaneCaptureMessage extends PaneTargetScope {
     command: 'pane-capture';
     lines?: number | undefined;
     scrollback: boolean;
+    /** Wait for this many ms of no output before reading, up to the daemon's cap (#390). */
+    settle_ms?: number | undefined;
 }
 
 export interface PaneSyncMessage {
@@ -210,6 +262,8 @@ export interface PaneSyncExcludeMessage extends PaneTargetScope {
 export interface WorkspaceListMessage {
     command: 'workspace-list';
     group?: string | undefined;
+    /** app-state-core.md §2.9: list only the workspaces nested under this one (name-or-id). */
+    parent?: string | undefined;
 }
 
 export interface WorkspaceCreateMessage {
@@ -241,6 +295,29 @@ export interface WorkspaceCreateMessage {
      * the group's defaults and the user's final choice is in the request, including "no repo".
      */
     group_defaults: boolean;
+    /**
+     * app-state-core.md §2.9: nest the new workspace under this one (name-or-id). The child
+     * follows its parent's placement, so it cannot be combined with `group`.
+     */
+    parent?: string | undefined;
+    /**
+     * §2.9: nest under the workspace holding this pane (`kelpi workspace create --nested`
+     * forwards `KELPI_PANE_ID`). Exclusive with `parent`.
+     */
+    parent_pane_id?: string | undefined;
+}
+
+/**
+ * app-state-core.md §2.9: nest an existing workspace under another, or reorder it among that
+ * parent's children. Request/response, unlike `workspace-move`, because nesting can be refused
+ * (one level deep) and the caller needs to hear why. Un-nesting is `workspace-move`.
+ */
+export interface WorkspaceNestMessage {
+    command: 'workspace-nest';
+    name: string;
+    parent: string;
+    /** Post-remove index among the parent's children; absent = append. */
+    index?: number | undefined;
 }
 
 export interface WorkspaceMoveMessage {
@@ -273,6 +350,11 @@ export interface WorkspaceDeleteMessage {
      * state unreachable by any gesture. This is that asymmetry, restored.
      */
     allow_last?: boolean | undefined;
+    /**
+     * app-state-core.md §2.9: delete the workspace's nested workspaces with it. Absent or false
+     * promotes them into the parent's sidebar slot instead.
+     */
+    cascade?: boolean | undefined;
     /**
      * Worktree cleanup (graft-git.md §8.7): the linked worktrees (paths, as the preview named
      * them) that go with this workspace and its batch: a delete dialog's ticked rows. Only a
@@ -727,6 +809,7 @@ export type WireMessage =
     | AgentNotificationMessage
     | SessionStartMessage
     | SessionEndMessage
+    | PermissionRequestMessage
     | PaneSplitMessage
     | PaneCreateMessage
     | PaneCloseMessage
@@ -746,6 +829,7 @@ export type WireMessage =
     | WorkspaceListMessage
     | WorkspaceCreateMessage
     | WorkspaceMoveMessage
+    | WorkspaceNestMessage
     | WorkspaceDeleteMessage
     | WorkspaceProfileMessage
     | WorkspaceLabelMessage
@@ -812,6 +896,7 @@ export const EXPLICIT_CHAIN_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'workspace-create',
     'workspace-list',
     'workspace-move',
+    'workspace-nest',
     'workspace-delete',
     'workspace-profile',
     'workspace-label',
@@ -891,6 +976,7 @@ export const PANE_ID_REQUIRED_COMMANDS: ReadonlySet<WireCommandName> = new Set([
     'notification',
     'session-start',
     'session-end',
+    'permission-request',
     'pane-move',
     'pane-move-to-workspace',
     'layout-cycle',

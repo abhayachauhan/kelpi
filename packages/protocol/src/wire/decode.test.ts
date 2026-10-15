@@ -236,6 +236,195 @@ describe('agent lifecycle events', () => {
     });
 });
 
+/**
+ * #387: optional hook fields on `notification`, `stop` and `session-start`. An older CLI never
+ * sends them, so its lines must decode to exactly the shapes above (no key, not even an
+ * undefined one); a newer CLI's lines reach an older daemon as unknown keys, which §2.2 ignores.
+ * Empty strings read as absent; a wrong-typed value poisons the line like any known key (§2.2).
+ */
+describe('agent hook fields (#387)', () => {
+    const TRANSCRIPT = '/home/user/.claude/projects/-work-app/abc.jsonl';
+
+    it('decodes an older CLI line with no new keys exactly as before', () => {
+        for (const message of [
+            ok({ command: 'stop', pane_id: PANE, background_tasks: 1 }),
+            ok({ command: 'notification', pane_id: PANE, title: 'Claude Code', body: 'hi' }),
+            ok({ command: 'session-start', pane_id: PANE, session_id: 'abc' })
+        ]) {
+            expect(Object.keys(message)).not.toContain('notification_type');
+            expect(Object.keys(message)).not.toContain('last_assistant_message');
+            expect(Object.keys(message)).not.toContain('last_assistant_message_truncated');
+            expect(Object.keys(message)).not.toContain('transcript_path');
+            expect(Object.keys(message)).not.toContain('tool_name');
+        }
+        expect(ok({ command: 'stop', pane_id: PANE })).toStrictEqual({
+            command: 'stop',
+            pane_id: PANE_UPPER,
+            background_tasks: 0
+        });
+    });
+
+    it('decodes the new fields on stop, notification and session-start', () => {
+        expect(
+            ok({
+                command: 'stop',
+                pane_id: PANE,
+                last_assistant_message: 'Done.',
+                last_assistant_message_truncated: true,
+                transcript_path: TRANSCRIPT
+            })
+        ).toStrictEqual({
+            command: 'stop',
+            pane_id: PANE_UPPER,
+            background_tasks: 0,
+            last_assistant_message: 'Done.',
+            last_assistant_message_truncated: true,
+            transcript_path: TRANSCRIPT
+        });
+        expect(
+            ok({
+                command: 'notification',
+                pane_id: PANE,
+                title: 'Claude Code',
+                body: 'Claude needs your permission to use Bash',
+                notification_type: 'permission_prompt',
+                transcript_path: TRANSCRIPT
+            })
+        ).toStrictEqual({
+            command: 'notification',
+            pane_id: PANE_UPPER,
+            title: 'Claude Code',
+            body: 'Claude needs your permission to use Bash',
+            background_tasks: 0,
+            notification_type: 'permission_prompt',
+            transcript_path: TRANSCRIPT
+        });
+        expect(
+            ok({ command: 'notification', pane_id: PANE, agent: 'codex', title: 'Codex', tool_name: 'Bash' })
+        ).toMatchObject({ tool_name: 'Bash' });
+        expect(
+            ok({ command: 'session-start', pane_id: PANE, session_id: 'abc', transcript_path: TRANSCRIPT })
+        ).toMatchObject({ transcript_path: TRANSCRIPT });
+    });
+
+    it('drops empty strings, a false truncated flag, and a flag without a message', () => {
+        const stop = ok({
+            command: 'stop',
+            pane_id: PANE,
+            last_assistant_message: '',
+            last_assistant_message_truncated: true,
+            transcript_path: ''
+        });
+        expect(stop).toStrictEqual({ command: 'stop', pane_id: PANE_UPPER, background_tasks: 0 });
+        expect(
+            ok({ command: 'stop', pane_id: PANE, last_assistant_message: 'x', last_assistant_message_truncated: false })
+        ).not.toHaveProperty('last_assistant_message_truncated');
+        const notification = ok({ command: 'notification', pane_id: PANE, notification_type: '', tool_name: '' });
+        expect(notification).not.toHaveProperty('notification_type');
+        expect(notification).not.toHaveProperty('tool_name');
+        expect(ok({ command: 'session-start', pane_id: PANE, session_id: 'abc', transcript_path: '' })).not.toHaveProperty(
+            'transcript_path'
+        );
+    });
+
+    it('reads null as absent and drops a wrong-typed value with its line', () => {
+        expect(ok({ command: 'stop', pane_id: PANE, last_assistant_message: null })).not.toHaveProperty(
+            'last_assistant_message'
+        );
+        expect(rejected({ command: 'notification', pane_id: PANE, notification_type: 1 })).toMatchObject({
+            reason: 'field-type',
+            field: 'notification_type'
+        });
+        expect(rejected({ command: 'stop', pane_id: PANE, last_assistant_message: ['x'] }).field).toBe(
+            'last_assistant_message'
+        );
+        expect(
+            rejected({ command: 'stop', pane_id: PANE, last_assistant_message: 'x', last_assistant_message_truncated: 'true' })
+                .field
+        ).toBe('last_assistant_message_truncated');
+        expect(rejected({ command: 'session-start', pane_id: PANE, session_id: 'abc', transcript_path: 7 }).field).toBe(
+            'transcript_path'
+        );
+    });
+});
+
+describe('permission-request (#388)', () => {
+    const INPUT = { command: 'touch /tmp/marker', description: 'Create marker file' };
+
+    it('decodes a full request', () => {
+        expect(
+            ok({
+                command: 'permission-request',
+                pane_id: PANE,
+                tool_name: 'Bash',
+                tool_input: INPUT,
+                mcp_server: 'github',
+                cwd: '/private/tmp/project',
+                permission_mode: 'default',
+                session_id: 'abc',
+                agent: 'claude'
+            })
+        ).toStrictEqual({
+            command: 'permission-request',
+            pane_id: PANE_UPPER,
+            tool_name: 'Bash',
+            tool_input: INPUT,
+            mcp_server: 'github',
+            cwd: '/private/tmp/project',
+            permission_mode: 'default',
+            session_id: 'abc'
+        });
+    });
+
+    it('reads an absent or null tool_input as {} and leaves empty optional strings off', () => {
+        const bare = { command: 'permission-request', pane_id: PANE, tool_name: 'Bash' };
+        expect(ok(bare)).toStrictEqual({ ...bare, pane_id: PANE_UPPER, tool_input: {} });
+        expect(ok({ ...bare, tool_input: null })).toMatchObject({ tool_input: {} });
+        expect(ok({ ...bare, mcp_server: '', cwd: '', permission_mode: '', session_id: '' })).toStrictEqual({
+            ...bare,
+            pane_id: PANE_UPPER,
+            tool_input: {}
+        });
+    });
+
+    it('ignores the Claude hook keys it does not know', () => {
+        expect(
+            ok({
+                command: 'permission-request',
+                pane_id: PANE,
+                tool_name: 'Bash',
+                tool_input: INPUT,
+                hook_event_name: 'PermissionRequest',
+                permission_suggestions: [{ type: 'setMode', mode: 'acceptEdits' }],
+                effort: { level: 'medium' }
+            })
+        ).toMatchObject({ tool_name: 'Bash', tool_input: INPUT });
+    });
+
+    it('rejects a tool_input that is not a plain object, like any wrong-typed known key', () => {
+        for (const toolInput of [['x'], 'touch x', 7, true]) {
+            expect(
+                rejected({ command: 'permission-request', pane_id: PANE, tool_name: 'Bash', tool_input: toolInput })
+            ).toMatchObject({ reason: 'field-type', field: 'tool_input', command: 'permission-request' });
+        }
+        expect(rejected({ command: 'permission-request', pane_id: PANE, tool_name: 'Bash', cwd: 7 }).field).toBe('cwd');
+    });
+
+    it('guards a missing or empty tool_name and a missing pane_id', () => {
+        expect(rejected({ command: 'permission-request', pane_id: PANE, tool_input: INPUT })).toMatchObject({
+            reason: 'guard',
+            detail: 'permission-request requires tool_name',
+            field: 'tool_name',
+            command: 'permission-request'
+        });
+        expect(rejected({ command: 'permission-request', pane_id: PANE, tool_name: '' }).field).toBe('tool_name');
+        expect(rejected({ command: 'permission-request', tool_name: 'Bash' })).toMatchObject({
+            reason: 'guard',
+            field: 'pane_id'
+        });
+    });
+});
+
 describe('pane commands', () => {
     it('accepts workspace alone for split/create but not for close/name/capture', () => {
         expect(ok({ command: 'pane-split', workspace: 'beta' })).toMatchObject({ workspace: 'beta' });
@@ -388,6 +577,52 @@ describe('pane commands', () => {
         expect(rejected({ command: 'pane-move-to-workspace', pane_id: PANE, name: 'scratch', text: true })).toMatchObject(
             { reason: 'field-type', field: 'text' }
         );
+    });
+
+    it('decodes #390 settle_ms and if_revision as ints, and leaves them out when not sent', () => {
+        expect(ok({ command: 'pane-capture', target: 'worker', settle_ms: 500 })).toMatchObject({ settle_ms: 500 });
+        expect(ok({ command: 'pane-send', target: 'worker', text: 'y', if_revision: 0 })).toMatchObject({ if_revision: 0 });
+        expect(ok({ command: 'pane-send-key', target: 'worker', key: 'enter', if_revision: 42 })).toMatchObject({
+            if_revision: 42
+        });
+        // A daemon seeds its revisions from the clock (milliseconds since the epoch): 13 digits.
+        expect(ok({ command: 'pane-send', target: 'worker', text: 'y', if_revision: 1760000000123 })).toMatchObject({
+            if_revision: 1760000000123
+        });
+        expect(
+            parseWireLine('{"command":"pane-send-key","target":"worker","key":"enter","if_revision":1760000000123}')
+        ).toMatchObject({ ok: true, message: { if_revision: 1760000000123 } });
+        // Wrong-typed is the usual field-type rejection; the handler judges the value (settle_ms <= 0).
+        expect(rejected({ command: 'pane-capture', target: 'worker', settle_ms: 1.5 }).field).toBe('settle_ms');
+        expect(rejected({ command: 'pane-capture', target: 'worker', settle_ms: '500' }).field).toBe('settle_ms');
+        expect(rejected({ command: 'pane-send', target: 'worker', text: 'y', if_revision: '3' }).field).toBe('if_revision');
+        expect(ok({ command: 'pane-capture', target: 'worker', settle_ms: -1 })).toMatchObject({ settle_ms: -1 });
+        expect(ok({ command: 'pane-capture', target: 'worker', settle_ms: null })).not.toHaveProperty('settle_ms');
+
+        // Absent: exactly the message these requests decoded to before.
+        expect(ok({ command: 'pane-capture', target: 'worker', lines: 5 })).toStrictEqual({
+            command: 'pane-capture',
+            pane_id: undefined,
+            target: 'worker',
+            workspace: undefined,
+            lines: 5,
+            scrollback: false
+        });
+        expect(ok({ command: 'pane-send', pane_id: PANE, target: 'worker', text: 'ls' })).toStrictEqual({
+            command: 'pane-send',
+            pane_id: PANE_UPPER,
+            target: 'worker',
+            workspace: undefined,
+            text: 'ls',
+            bare: false
+        });
+        expect(ok({ command: 'pane-send-key', target: 'worker', key: 'enter' })).toStrictEqual({
+            command: 'pane-send-key',
+            pane_id: undefined,
+            target: 'worker',
+            workspace: undefined,
+            key: 'enter'
+        });
     });
 
     it('decodes pane-capture and pane-list options', () => {
@@ -544,6 +779,7 @@ describe('workspace and group commands', () => {
             command: 'workspace-delete',
             name: 'feat-x',
             force: false,
+            cascade: false,
             worktree_paths: undefined,
             force_worktree_paths: undefined,
             prune_worktrees: undefined,
@@ -559,6 +795,30 @@ describe('workspace and group commands', () => {
         expect(rejected({ command: 'workspace-delete', name: 'feat-x', worktree_paths: '/w/a' })).toMatchObject({
             reason: 'field-type',
             field: 'worktree_paths'
+        });
+    });
+
+    it('decodes the nesting fields (app-state-core §2.9)', () => {
+        expect(ok({ command: 'workspace-create', parent: 'orchestrator' })).toMatchObject({ parent: 'orchestrator' });
+        // §2.9: an empty parent reaches the handler, which refuses it (never "no parent").
+        expect(ok({ command: 'workspace-create', parent: '' })).toMatchObject({ parent: '' });
+        expect(ok({ command: 'workspace-create', parent_pane_id: '' })).toMatchObject({ parent_pane_id: '' });
+        expect(ok({ command: 'workspace-list', parent: '' })).toMatchObject({ parent: '' });
+        expect(ok({ command: 'workspace-create', parent_pane_id: 'not-a-uuid' })).toMatchObject({
+            parent_pane_id: 'not-a-uuid'
+        });
+        expect(ok({ command: 'workspace-delete', name: 'x', cascade: true })).toMatchObject({ cascade: true });
+        expect(ok({ command: 'workspace-list', parent: 'orchestrator' })).toMatchObject({ parent: 'orchestrator' });
+        expect(ok({ command: 'workspace-nest', name: 'w', parent: 'p', index: 2 })).toEqual({
+            command: 'workspace-nest',
+            name: 'w',
+            parent: 'p',
+            index: 2
+        });
+        expect(rejected({ command: 'workspace-nest', name: 'w' })).toMatchObject({ field: 'parent' });
+        expect(rejected({ command: 'workspace-create', parent: 3 })).toMatchObject({
+            reason: 'field-type',
+            field: 'parent'
         });
     });
 

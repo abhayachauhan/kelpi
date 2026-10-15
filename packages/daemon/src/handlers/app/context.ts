@@ -15,6 +15,7 @@
 
 import { newUUID } from '@kelpi/core/codec';
 import type { SidebarID } from '@kelpi/core/codec';
+import type { JsonObject, JsonValue } from '@kelpi/protocol';
 
 import type { CommandHandler, HandlerContext, HandlerTable, ReplyHandle } from '../../seams.js';
 import type {
@@ -34,6 +35,8 @@ import {
 } from '../../git/index.js';
 import { createGraftService, type GraftService } from '../../graft/index.js';
 import { createWebPaneService, type WebPaneService } from '../../webpane/service.js';
+import type { AgentHookEvent } from './agent-events.js';
+import { BUNDLED_PERMISSIONS_PROVIDER } from '../../plugins/permissions-service.js';
 
 export type AppContext = HandlerContext<DaemonState, DomainAction, DomainEvent>;
 export type AppHandler = CommandHandler<AppContext>;
@@ -62,6 +65,14 @@ export interface SpawnPaneRequest {
  */
 export interface WorktreeCreator {
     begin(): WorktreeCreateRun;
+}
+
+/** #388: one `kelpi.agent.permissions` `decide` call, as `decidePermission` started it. */
+export interface PermissionDecisionCall {
+    /** The provider the call went to: `kelpi.agent.permissions.bundled` or a plugin provider id. */
+    readonly provider: string;
+    /** The provider's raw result; the handler validates it and owns the deadline. */
+    readonly result: Promise<JsonValue>;
 }
 
 export interface WorktreeCreateRun {
@@ -158,6 +169,21 @@ export interface AppHandlerOptions {
      * restart is about to resume. Defaults to never.
      */
     readonly agentEventsMuted?: ((paneID: string) => boolean) | undefined;
+    /**
+     * #387: publish one `agent.event` to plugins (agent-lifecycle.md §7.7). Boot hands it to the
+     * plugin service's event bus. It is not a daemon broadcast (never `daemon.agent-event`): it
+     * rides the `plugin-event` frame every window session receives, like every plugin event, and
+     * only plugin backends and views consume it. Defaults to dropping it.
+     */
+    readonly emitAgentEvent?: ((event: AgentHookEvent) => void) | undefined;
+    /**
+     * #388: ask the `kelpi.agent.permissions` provider for a decision on `permission-request`.
+     * `signal` aborts when the handler's deadline passes. Defaults to the bundled answer,
+     * which always abstains.
+     */
+    readonly decidePermission?: ((args: JsonObject, signal: AbortSignal) => PermissionDecisionCall) | undefined;
+    /** The daemon's log line (#388's permission decisions). Defaults to discarding. */
+    readonly log?: ((message: string) => void) | undefined;
     /** Default columns/rows for a PTY spawned without a client-reported size. */
     readonly defaultCols?: number | undefined;
     readonly defaultRows?: number | undefined;
@@ -183,6 +209,9 @@ export interface AppDeps {
     readonly isAppActive: () => boolean;
     readonly isPaneFocused: ((paneID: string, workspaceID: string) => boolean) | null;
     readonly agentEventsMuted: (paneID: string) => boolean;
+    readonly emitAgentEvent: (event: AgentHookEvent) => void;
+    readonly decidePermission: (args: JsonObject, signal: AbortSignal) => PermissionDecisionCall;
+    readonly log: (message: string) => void;
 }
 
 const noop = (): void => {};
@@ -248,7 +277,12 @@ export function resolveAppDeps(options: AppHandlerOptions = {}): AppDeps {
         scrollTarget: options.scrollTarget ?? noop,
         isAppActive: options.isAppActive ?? (() => false),
         isPaneFocused: options.isPaneFocused ?? null,
-        agentEventsMuted: options.agentEventsMuted ?? (() => false)
+        agentEventsMuted: options.agentEventsMuted ?? (() => false),
+        emitAgentEvent: options.emitAgentEvent ?? noop,
+        decidePermission:
+            options.decidePermission ??
+            (() => ({ provider: BUNDLED_PERMISSIONS_PROVIDER, result: Promise.resolve({ behavior: 'abstain' }) })),
+        log: options.log ?? noop
     };
 }
 

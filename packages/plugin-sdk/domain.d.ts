@@ -28,8 +28,14 @@ export interface WorkspaceInfo {
     /** The sidebar icon in `setIcon`'s spelling (`"emoji:🔥"`); absent for the letter avatar. */
     icon?: string;
     lastActivityAt?: string; agentSessionID?: string; groupID?: string; groupName?: string;
+    /** The workspace this one is nested under; absent when it is not nested. */
+    parentID?: string; parentName?: string;
 }
-export interface GroupInfo { id: string; name: string; color?: WorkspaceColor; workspaces: { id: string; name: string }[] }
+export interface GroupInfo {
+    id: string; name: string; color?: WorkspaceColor;
+    /** Members in order, each followed by the workspaces nested under it (those carry `parentID`). */
+    workspaces: { id: string; name: string; parentID?: string; parentName?: string }[];
+}
 export interface PaneMutation { paneID: string; workspaceID: string; workspaceName: string; label?: string }
 export interface PaneResize extends PaneMutation { splitPath: string; ratio: number; targetShare: number }
 export interface PanePlacement { paneID: string; workspaceID: string }
@@ -46,6 +52,11 @@ export interface WorkspaceCreateOptions {
     muted?: boolean;
     /** Create the workspace with this sidebar icon, in `setIcon`'s spelling (`"emoji:🔥"`). */
     icon?: string;
+    /**
+     * Nest the new workspace under this one (an id or name). Nesting is one level deep, and the
+     * child follows its parent's group, so it cannot be combined with `groupID`.
+     */
+    parentID?: string;
 }
 export interface WorkspaceCreated extends WorkspaceIdentity {
     group?: string; worktreePath?: string; branch?: string;
@@ -57,16 +68,36 @@ export interface WorkspaceCreated extends WorkspaceIdentity {
     muted: boolean;
     /** The icon it was created with; absent when none was asked for. */
     icon?: string;
+    /**
+     * The parent it was nested under, so a `parentID` request can be confirmed. A create whose
+     * parent is missing from the reply rejects (`PARENT_LOST` or `UNSUPPORTED`), with the created
+     * workspace in the error's `details`.
+     */
+    parentID?: string; parentName?: string;
+}
+export interface WorkspaceNested extends WorkspaceIdentity {
+    parentID: string; parentName: string;
+    /** Its position among the parent's nested workspaces. */
+    index: number;
 }
 export interface WorkspaceMoveOptions { groupID?: string; index?: number }
 export interface WorkspacesAPI {
-    list(options?: { groupID?: string }): Promise<WorkspaceInfo[]>;
+    /** `parentID` lists only the workspaces nested under that one. */
+    list(options?: { groupID?: string; parentID?: string }): Promise<WorkspaceInfo[]>;
     create(options?: WorkspaceCreateOptions): Promise<WorkspaceCreated>;
     rename(workspaceID: string, name: string): Promise<{ workspaceID: string; name: string }>;
     /** Uses the CLI deletion guard, including its refusal to remove the final workspace. */
-    remove(workspaceID: string, options?: { force?: boolean }): Promise<WorkspaceIdentity & { path?: string }>;
+    /** `cascade` deletes its nested workspaces too; otherwise they move up into its place. */
+    remove(workspaceID: string, options?: { force?: boolean; cascade?: boolean }): Promise<WorkspaceIdentity & { path?: string; deletedChildren?: string[]; deletedChildNames?: string[] }>;
     move(workspaceID: string, options?: WorkspaceMoveOptions): Promise<void>;
     moveMany(workspaceIDs: string[], options?: WorkspaceMoveOptions): Promise<{ workspaceIDs: string[]; groupID: string | null; index: number | null }>;
+    /**
+     * Nest a workspace under another (one level deep), or reorder it among that parent's nested
+     * workspaces. `move` / `moveMany` take a workspace back out.
+     */
+    nest(workspaceID: string, parentID: string, options?: { index?: number }): Promise<WorkspaceNested>;
+    /** Show or hide a parent's nested workspaces in the sidebar. */
+    setChildrenCollapsed(workspaceID: string, collapsed: boolean): Promise<{ workspaceID: string; collapsed: boolean }>;
     setProfile(workspaceID: string, profile: string | null): Promise<void>;
     /**
      * Mute or unmute a workspace's notifications; omit `muted` to toggle. Resolves with the state
@@ -127,6 +158,44 @@ export interface AgentsAPI {
     notify(paneID: string, title: string, body: string, options?: { backgroundTasks?: number }): Promise<void>;
     sessionStart(paneID: string, sessionID: string, agent: AgentKind, options?: { profile?: string }): Promise<void>;
     sessionEnd(paneID: string, sessionID: string): Promise<void>;
+    /** #387: one call per agent hook Kelpi handles (`agent.event`), shown or not. Returns an unsubscribe. */
+    onEvent(listener: (event: AgentHookEvent, raw: import('./index.js').Event) => void | Promise<void>): import('./index.js').Dispose;
+}
+/** The wire verb an agent hook arrived as (docs/agent-lifecycle.md §7.7). */
+export type AgentHookEventType = 'start' | 'stop' | 'notification' | 'error' | 'session-start' | 'session-end' | 'permission-request';
+/** The `agent.event` payload. Optional fields are present only when the hook carried them. */
+export interface AgentHookEvent {
+    type: AgentHookEventType;
+    paneID: string;
+    workspaceID: string;
+    /** The pane's agent kind after the event; `claude` when none is recorded. */
+    agent: AgentKind;
+    /** The session the pane is bound to after the event. */
+    sessionID?: string;
+    /** The pane's status after Kelpi applied the event, as `panes.list` reports it. */
+    status: PaneStatus;
+    /** Claude Notification only: `permission_prompt`, `idle_prompt`, `elicitation_dialog`, ... */
+    notificationType?: string;
+    /** `notification` only. */
+    title?: string;
+    body?: string;
+    /** `error`, and a `permission-request` deny when the provider gave one. */
+    message?: string;
+    /** Claude Stop only: the final reply's text, capped at 64 KiB of UTF-8. */
+    lastAssistantMessage?: string;
+    /** Present (true) only when `lastAssistantMessage` was cut to the cap. */
+    lastAssistantMessageTruncated?: true;
+    transcriptPath?: string;
+    /** `stop` / `notification`, only when > 0. */
+    backgroundTasks?: number;
+    /** Codex PermissionRequest (`notification`), and every `permission-request`. */
+    toolName?: string;
+    /** `permission-request` only (#388): the decision Kelpi answered Claude with. Never carries the tool input. */
+    behavior?: 'allow' | 'deny' | 'abstain';
+    /** `permission-request` only: the `kelpi.agent.permissions` provider that was asked. */
+    provider?: string;
+    /** The pane's workspace is muted: honour it, never echo the event as a notification. */
+    muted?: true;
 }
 export interface TerminalSubscription { subscription: string; paneID: string; base64: string; cols: number; rows: number }
 export interface TerminalSync extends WorkspaceIdentity { active: boolean; syncedPaneIDs: string[]; excluded: { id: string; label?: string }[] }
@@ -135,12 +204,49 @@ export interface TerminalSearch {
     selected: number | null; caseSensitive: boolean;
     match: { line: number; col: number; length: number; linesFromBottom: number } | null;
 }
+export interface TerminalReadOptions {
+    lines?: number; scrollback?: boolean;
+    /** Wait until the pane has had no output for this many ms (capped at 10000) before reading. */
+    settleMs?: number;
+}
+export interface TerminalRead {
+    text: string;
+    /**
+     * The pane's screen revision when `text` was read. It bumps on every chunk of output the daemon
+     * has fed the pane (output still in flight from the terminal host is not counted yet) and on
+     * every resize. Within one daemon run a pane never repeats a revision, even when its terminal is
+     * restarted. It is not persisted, but a new daemon seeds its counter from the clock, past any
+     * value an earlier one could plausibly have issued, so a revision from before a restart does not match by accident.
+     */
+    revision: number;
+    /** 0-based and viewport-relative, on the active screen. */
+    cursor: { row: number; col: number };
+    altScreen: boolean;
+    /** Only with `settleMs`: false when the cap was reached first or the pane's terminal was restarted during the wait, and `text` is the screen at that point. */
+    settled?: boolean;
+}
+/**
+ * `ifRevision` sends only if the pane's revision still equals it (a `TerminalRead.revision`). When
+ * the screen changed since, nothing is written and the call rejects with a KelpiError whose `code`
+ * is `'SCREEN_CHANGED'` and whose `details.revision` is the current revision. A daemon that
+ * honoured the guard echoes `revision` in the result.
+ * An `ifRevision` that is not a non-negative integer rejects with `code` `'INVALID_ARGUMENT'` and
+ * sends nothing. An ack without `revision` means the daemon did not check the guard and has already
+ * typed, so the call rejects with `code` `'UNSUPPORTED'` and `details` the reply.
+ */
+export interface TerminalSendGuard { ifRevision?: number }
 export interface TerminalAPI {
     /** Snapshot plus subscription; listen for terminal.output events and unwatch on disposal. */
     watch(paneID: string): Promise<TerminalSubscription>;
     unwatch(subscription: string): Promise<void>;
-    send(pane: PaneTarget, text: string, options?: { bare?: boolean }): Promise<PaneMutation & { bare: boolean }>;
-    sendKey(pane: PaneTarget, key: NamedKey): Promise<PaneMutation & { key: NamedKey }>;
+    send(pane: PaneTarget, text: string, options?: { bare?: boolean } & TerminalSendGuard): Promise<PaneMutation & { bare: boolean; revision?: number }>;
+    sendKey(pane: PaneTarget, key: NamedKey, options?: TerminalSendGuard): Promise<PaneMutation & { key: NamedKey; revision?: number }>;
+    /**
+     * Reads the screen with its revision, to pass back as `ifRevision` on send/sendKey. Against a
+     * daemon from before #390, which reports no revision, cursor or alt-screen flag, it rejects with
+     * a KelpiError whose `code` is `'UNSUPPORTED'` and whose `details` is the reply; `capture` still works.
+     */
+    read(pane: PaneTarget, options?: TerminalReadOptions): Promise<TerminalRead>;
     capture(pane: PaneTarget, options?: { lines?: number; scrollback?: boolean }): Promise<string>;
     sync(workspaceID: string, action?: 'on' | 'off' | 'toggle' | 'status'): Promise<TerminalSync>;
     excludeFromSync(pane: PaneTarget, excluded: boolean): Promise<TerminalSync>;

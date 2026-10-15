@@ -9,7 +9,8 @@ and badges, group settings, and present shared prompts and actionable notificati
 The included [Agent Board](../examples/plugins/agent-board) uses the same HTML view as a pane,
 sidebar, inspector, bottom panel, workspace, toolbar, status bar, or settings view.
 
-The supported contract is **plugin API version 1** and **Kelpi protocol generation 2**.
+The supported contract is **plugin API version 1** and **Kelpi protocol generation 2**
+(WebSocket generation 3).
 The [roadmap and progress](plugin-roadmap.md) distinguish implemented capabilities from
 remaining work; the [extensibility audit](plugin-extensibility-audit.md) records the original
 design. For a practical starting point, use the [development guide](plugin-development.md).
@@ -156,7 +157,7 @@ contributions. See the [chrome feature guide](plugin-chrome.md) for commands, st
 ownership and the isolated development workflow.
 
 [Interaction Lab](../examples/plugins/interaction-lab) presents the command palette and the
-shared modal prompts from the public interaction feed, with no backend and no build. It is
+shared modal prompts from the public interaction feed, with no build, plus a one-command backend that asks through them. It is
 selected per placement in Settings → Plugins → Workbench views; see the
 [UI guide](plugin-ui.md#selectable-interaction-presenters) for what a presenter receives, what
 is withheld, and how a failed presenter falls back to the bundled one.
@@ -342,6 +343,97 @@ Reinstalling the same healthy, enabled revision is a no-op; use `reload` when yo
 For continuous development, `kelpi plugin dev <directory> --trust` validates and applies
 stable changed revisions. It keeps watching after invalid edits or failed updates.
 
+### CLI verbs
+
+A plugin can add its own top-level `kelpi` verb, so `kelpi hello a b` runs one of its commands
+with the words after the verb and prints plain text, rather than `kelpi plugin run` printing JSON
+([#391](https://github.com/benfriebe/kelpi/issues/391)). Map each verb onto a command the plugin
+declares:
+
+```json
+"contributes": {
+  "commands": [{ "id": "acme.dashboard.hello", "title": "Say hello" }],
+  "cli": [{ "name": "hello", "command": "acme.dashboard.hello", "summary": "Say hello to the arguments" }]
+}
+```
+
+- `name` is one lowercase word matching `^[a-z][a-z0-9-]*$`, at most 32 characters, and unique
+  within the plugin.
+- A built-in verb is refused, as are `help` and `version`: `cli verb "pane" is a built-in kelpi command`.
+  The list is `BUILTIN_CLI_VERBS` in [cli-verbs.ts](../packages/protocol/src/cli-verbs.ts).
+  `kelpi plugin validate`, `pack`, install, dev-install and rollback all refuse it.
+- `command` must be one of this plugin's own `contributes.commands`.
+- `summary` is required, at most 120 characters, with no line breaks or other control
+  characters; `kelpi --help` prints it as is.
+- Install refuses a verb that another installed plugin already declares, enabled or disabled:
+  `cli verb "hello" is already provided by plugin acme.other`. The first plugin keeps the name,
+  so a second one cannot quietly shadow it. Reinstalling or updating the same plugin keeps its
+  verbs. Offline validation cannot see other plugins, so this check happens only at install.
+
+The other rules are manifest errors, so `kelpi plugin validate` reports them without a daemon;
+its report lists the declared verbs under `cli`. Verbs sit at the top level rather than under a
+prefix. The CLI dispatches its own verbs first without asking the daemon, so if a later Kelpi
+release adds a built-in with the same name, the built-in wins: the installed plugin still loads
+and keeps working otherwise, but that one verb is no longer listed by `kelpi --help` or
+reachable, and `cli` answers `unknown kelpi verb: <verb>` for it.
+
+The command receives a `CliInvocation` as its args:
+
+| Field | Value |
+| --- | --- |
+| `argv` | Every word after the verb, in order. `--help` is passed through; a `--json` before any `--` is removed and sets `json`. |
+| `cwd` | The caller's working directory, on the machine running the CLI. |
+| `isTTY` | Whether the CLI's standard output is a terminal. |
+| `json` | Whether the caller passed `--json`. |
+
+Its context carries the caller's `paneID` when the CLI runs inside a pane of the daemon it asks,
+and that pane's `workspaceID`. A pane ID that daemon does not know, such as one a CLI in another
+Kelpi's pane forwards, is left out unless the request also names a `workspaceID`, so a plugin never
+acts on a foreign pane. It returns a `CliResult`, `{ text?, json?, exitCode?, stderr? }`:
+
+```js
+api.commands.register('acme.dashboard.hello', ({ argv, json }) => {
+    if (json) return { json: { argv } };
+    return { text: `hello ${argv.join(' ')}`, exitCode: argv.length ? 0 : 2 };
+});
+```
+
+The CLI prints `stderr` to standard error, then `text` with a trailing newline, or with `--json`
+`json` as indented JSON (`{ "text": … }` when the command returned no `json`). It exits with
+`exitCode`, 0 when absent. A return value that is not an object prints nothing (`{}` with
+`--json`). A result is limited to 256 KiB of JSON, like every plugin result; a larger one fails
+only that call with `plugin result exceeds the 256 KiB limit` and the backend keeps running, so a
+verb that dumps a log should page or truncate. An unknown verb
+still prints `Unknown command`; a verb whose plugin is disabled fails with
+`plugin <id> is disabled`. A verb gets no standard input and cannot prompt, so one that needs a
+confirmation should take `--yes`. `kelpi --help` lists installed verbs under their plugin's name,
+marking disabled ones; see [the CLI reference](cli.md).
+The daemon gives each call 30 seconds, activating the plugin's backend included; past that the call
+fails, but a handler that is already running is not stopped.
+
+Both requests are actions of the `plugin` envelope. `cli-list` returns
+`{ verbs: [{ name, summary, command, pluginID, pluginName, enabled }] }` for every installed plugin,
+and `cli` runs one verb:
+
+```json
+{"command":"plugin","action":"cli","text":"{\"verb\":\"hello\",\"argv\":[\"a\",\"b\"],\"cwd\":\"/tmp\",\"isTTY\":false,\"json\":false,\"paneID\":\"…\"}"}
+```
+
+[CLI Lab](../examples/plugins/cli-lab) adds `kelpi hello` with no views and no build: it prints the
+words you pass, sets an exit status, writes to standard error, and with `--json` echoes the
+invocation and the pane context it received.
+
+[Run Suggested Command](../examples/plugins/run-suggested) puts a verb beside a window command:
+it remembers the `! cmd` line or shell block in Claude's last reply from `agent.event` Stop
+events, runs it from ⌃⌥R or a `pane.header` item after a backend dialog, typing into the session
+behind `ifRevision`, and adds `kelpi run-suggested`, which cannot prompt, so it prints the
+command or runs it with `--yes`.
+
+[Auto-approve](../examples/plugins/auto-approve) adds `kelpi auto-approve on [minutes] | off | status`
+the same way, beside a `kelpi.agent.permissions` provider, a status bar item and a palette toggle:
+while on, it allows Claude's Bash commands that pass its never-auto-approve list and abstains on
+everything else, and `on` and `status` warn on standard error until the provider is selected.
+
 ## Updates and recovery
 
 Inspect retained revisions and switch back using their full content identity:
@@ -454,6 +546,7 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `commands.register(id, handler)` | Backend only. Handler receives JSON arguments and invocation context. |
 | `commands.execute(id, args?)` | Invoke a declared command, including another installed plugin's command. |
 | `events.on(name, listener)` / `emit(name, data?)` | Subscribe to a named event or `*`; emit an event under this plugin's namespace. Returns an unsubscribe function. |
+| `agents.onEvent(listener)` | One `agent.event` per agent hook Kelpi handles, typed `AgentHookEvent`, shown as a notification or not. The listener gets the payload and the raw event. Returns an unsubscribe function. |
 | `storage.get(key)` / `storage.set(key, value)` | Persistent JSON belonging to this plugin on this daemon. |
 | `settings.get()` / `settings.set(key, value)` | Manifest defaults plus persisted overrides; changes emit `settings.changed`. Overrides outlive `kelpi plugin remove` and a later reinstall inherits them ([#198](https://github.com/benfriebe/kelpi/issues/198)). Nothing clears one: `set` only merges, and writing the manifest default back persists it as an override, so a genuinely clean install means deleting `<db>.plugins/data/<plugin-id>/settings.json`, where `<db>` is the daemon database path. [Service provider preferences](plugin-services.md) survive removal the same way but, unlike settings, do have an explicit clear. |
 | `documents.get/edit/save/setMode/refresh/watch/unwatch` | Shared native Markdown, Scratchpad, Diff and CSV source API with guarded revisions. Document views also use `stage/applyDraft` to preserve pending edits; see [document renderers](plugin-documents.md). |
@@ -466,6 +559,10 @@ document.body.textContent = `${snapshot.state.workspaces.length} workspaces`;
 | `browser.get/watch/unwatch` | Observe native tabs, navigation, host availability, favourites and inspector revisions on the owning daemon. |
 | `browser.attach({element, onPresentation, onAction?})` | Browser replacement view only. Place the existing native page inside a measured slot; retain tabs and sessions across swaps. The [browser guide](plugin-browser.md) covers shared navigation, capture, cookies, inspection and batch APIs. |
 | `ui.reveal(paneID)` | Ask the invoking window to reveal a pane; broadcasts when no window context exists. |
+| `ui.showDialog(options, target?)` | Ask with a dialog; resolves with the chosen action ID, or null on Escape or dismissal. A view's prompt belongs to the view and takes no `target`. A backend's opens in the invoking window or `target.windowID`, else rejects with code `NO_WINDOW`; see [prompts from a backend](plugin-ui.md#prompts-from-a-backend). |
+| `ui.showQuickPick(options, target?)` | Pick one enabled item; resolves with its ID, or null. Same routing as `ui.showDialog`. |
+| `ui.showInput(options, target?)` | Ask for text; resolves with the entered string (possibly empty), or null. Same routing as `ui.showDialog`. |
+| `ui.showNotification(options, target?)` | Show a notification; resolves with an action ID, or null on dismissal or expiry. Same routing as `ui.showDialog`. |
 | `setState(object)` | View only. Persist this pane's state and current manifest state version. |
 | `ui.activateWorkspace(id)` / `ui.focusPane(workspaceID, paneID)` | View only. Change selection in the attached client runtime. |
 | `ui.getNavigation()` / `ui.onNavigation(listener, onError?)` | View only. Read/watch the primary window's connected hosts, workspace summaries and active selection. Returns opaque host IDs without connection credentials. Embedded remote views require per-host navigation trust in Settings ▸ Remote. |
@@ -524,6 +621,37 @@ sets the flag (omit `muted` to toggle), `api.workspaces.create({ muted: true })`
 workspace muted, and `api.workspaces.list()` reports `muted` on every entry. The chrome
 snapshot's `agents.muted` and the `muted` bucket of `agentPanes` count the waiting panes of
 muted workspaces, which `agents.waiting` leaves out.
+
+`agent.event` is one event per agent hook Kelpi handles (`kelpi event start`, `stop`,
+`notification`, `error`, `session-start`, `session-end` and, one per permission decision,
+`permission-request`; agent-lifecycle.md §7.7), so a plugin
+can react to an agent without reading its screen. It fires whether or not a desktop
+notification is shown: for the focused pane of an active window, in a muted workspace, and
+when the pane's status did not change. It is published after Kelpi applied the hook, so
+`panes.list` already agrees with it. `api.agents.onEvent(listener)` subscribes to it and passes
+the typed payload; `api.events.on('agent.event', ...)` sees the same events in `event.data`.
+Kelpi's own carry no `pluginID`, which `agents.onEvent` checks, since a plugin whose ID is
+`agent` could emit a look-alike. Nothing fires for a pane whose agent is being restarted on a
+new terminal host, or for a pane no workspace owns.
+Any applied lifecycle verb publishes one, including a plugin's own `api.agents.*` calls, so a
+plugin that answers an event by calling `agents.notify` loops.
+
+| Field | Present |
+| --- | --- |
+| `type` | Always: the wire verb, `start`, `stop`, `notification`, `error`, `session-start`, `session-end` or `permission-request`. |
+| `paneID`, `workspaceID` | Always. |
+| `agent` | Always: the pane's agent kind after the event, `claude` when none is recorded. |
+| `sessionID` | When the pane is bound to a session after the event, including the one the hook's own `session_id` bound. |
+| `status` | Always: the pane's status after the event. |
+| `title`, `body` | `notification`. |
+| `notificationType` | Claude Notification: `permission_prompt`, `idle_prompt`, `elicitation_dialog`, and so on. |
+| `message` | `error`. |
+| `lastAssistantMessage` | Claude Stop: the final reply's text, at most 64 KiB of UTF-8. `lastAssistantMessageTruncated: true` when it was cut. |
+| `transcriptPath` | `notification`, `stop` and `session-start`, when the hook carried it. |
+| `backgroundTasks` | `stop` and `notification`, only when greater than 0. |
+| `toolName` | Codex PermissionRequest (`notification --agent codex`). |
+| `behavior`, `provider` | `permission-request` (#388): one event per Claude permission decision, `behavior` `allow`, `deny` or `abstain`, `provider` the provider asked (absent when none could be), with `toolName` and, on a deny, `message`. Never the tool input. |
+| `muted` | `true` in a muted workspace, absent otherwise, as on `daemon.notification`. Honour it the same way. |
 
 Backend and frame delivery each use a bounded queue (32 events / 512 KiB), with one event
 awaiting acknowledgement. Awaited listeners apply backpressure. Overflow emits `gap`:
@@ -802,8 +930,10 @@ the old database after the copy are independent and are not merged back.
 
 Plugin installations, identity, storage, and settings live in `<db-path>.plugins/`.
 The pane descriptor and parking flag live in the main database. Protocol generation 2 uses
-`daemon-v2` run files and refuses generation 1 WebSocket clients. Upgrade the UI, shell,
-daemon, and CLI together; refresh installed browser clients.
+`daemon-v2` run files and refuses generation 1 WebSocket clients. WebSocket generation 3
+(nested workspaces) keeps the `daemon-v2` run files and refuses generation 2 WebSocket
+clients (see the [wire contract](wire-protocol.md#plugin-envelope-and-protocol-generation)).
+Upgrade the UI, shell, daemon, and CLI together; refresh installed browser clients.
 
 An explicit `KELPID_DB_PATH` remains authoritative. If you use a custom path, choose a new
 path or make a consistent backup before upgrading it; an older daemon must never open the

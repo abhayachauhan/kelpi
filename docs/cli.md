@@ -30,7 +30,8 @@ executable), symlinked into `/usr/local/bin` (or `$KELPI_INSTALL_DIR`) by
 
 1. **Agent hook entrypoint** (`kelpi event ...`): Claude Code and Codex CLI lifecycle hooks
    call it on every Stop/Start/Notification/SessionStart/SessionEnd fire. These must be
-   silent, fast, and never fail (exit 0 even when the app is not running).
+   silent, fast, and never fail (exit 0 even when the app is not running). Claude Code's
+   PermissionRequest hook also calls it, and waits for its answer (section 8.7).
 2. **Scripting/orchestration surface**: everything else (`pane`, `workspace`, `group`,
    `layout`, `open`, `md`, `diff`, `document`, `graft`, `web`, `plugin`, `doctor`, `install-hooks`). These are used
    by humans and by orchestrator agents (the `kelpi-agentic` skill), and mostly follow
@@ -109,6 +110,13 @@ Top-level subcommands: `event`, `pane`, `workspace`, `group`, `layout`, `open`, 
   **stderr**, an existing quirk), exit 0.
 - Unknown subcommand: `Unknown command: <x>\n` to stderr, then the usage block, exit 1.
 
+A word that is not a top-level subcommand may be a verb an installed plugin added
+([plugin CLI verbs](#plugin-cli-verbs)). Only then does the CLI ask the daemon, so a built-in
+subcommand never pays for a round trip; it is unknown only when no plugin declares it, or when
+no daemon can be reached. A word that could not be a verb name (the pattern `[a-z][a-z0-9-]*`,
+at most 32 characters), such as one starting with `-`, is never sent. `kelpi --help` (and `-h`,
+`help`) appends a `Plugin commands:` block when the daemon lists any.
+
 ### 3.1 Version resolution
 
 The CLI's identity is compiled in (`packages/cli/src/version.ts:17`): `CLI_VERSION` (kept in
@@ -127,7 +135,7 @@ reply.
 
 | Variable | Read by | Meaning |
 |---|---|---|
-| `KELPI_PANE_ID` | almost all commands | UUID of the caller's pane. Injected by the app into every PTY it spawns. Used (a) as the implicit target for caller-scoped commands, and (b) to scope label resolution to the caller's workspace. |
+| `KELPI_PANE_ID` | almost all commands | UUID of the caller's pane. Injected by the app into every PTY it spawns. Used (a) as the implicit target for caller-scoped commands, (b) to scope label resolution to the caller's workspace, and (c) by `workspace create --nested` as the `parent_pane_id` that names the workspace to nest under (§10.2). |
 | `KELPI_SOCKET` | transport selection | Absent/empty or any value not starting with `tcp:` selects the Unix socket at `/tmp/kelpi.sock` (the unix path itself is NOT configurable). `tcp:<host>:<port>` selects TCP. Malformed `tcp:` values (missing port, non-UInt16 port) silently fall back to the Unix socket. The host may not contain a colon (split on the first `:` after the prefix, max 1 split). |
 | `KELPI_REPLY_TIMEOUT` | reply reading | Positive integer seconds; overrides the default request/response read timeout of **5 seconds**. Non-integer or <=0 values are ignored. |
 | `KELPI_SILENT` | fire-and-forget failure path | If set (to anything), fully suppress the transport-failure `Warning:` stderr lines on fire-and-forget commands. Exit code is unchanged (0). |
@@ -274,7 +282,7 @@ Suppression logic:
 
 ### 5.7 Fire-and-forget command list
 
-`event *` (all six), `pane move <direction>`, `pane move-to-workspace`, `workspace move`,
+`event *` (all six lifecycle verbs; `event permission-request` is request/response, section 8.7), `pane move <direction>`, `pane move-to-workspace`, `workspace move`,
 `workspace profile`, `group create`, `group rename`, `group delete`, `layout cycle`,
 `layout select`, `open` (markdown route), `md`, `diff`.
 
@@ -427,16 +435,17 @@ most `web` verbs, `md`/`open` after the first positional).
 ## 8. `kelpi event` (hook entrypoint)
 
 ```
-kelpi event stop|start|error|notification|session-start|session-end
+kelpi event stop|start|error|notification|session-start|session-end|permission-request
           [--agent claude|codex] [--message ...] [--title ...] [--body ...]
 ```
 
-Fire-and-forget. Warnings auto-suppressed unless `KELPI_VERBOSE_HOOKS` is set.
+Fire-and-forget, except `permission-request` (section 8.7). Warnings auto-suppressed unless
+`KELPI_VERBOSE_HOOKS` is set.
 
 Parsing/validation order:
 
 1. Missing event type: usage line to stderr, exit 1.
-2. Event type not in `{stop, start, error, notification, session-start, session-end}`:
+2. Event type not in `{stop, start, error, notification, session-start, session-end, permission-request}`:
    `Unknown event type: <x>` + `Valid events: ...` to stderr, exit 1.
 3. `requirePaneID()`: silently exit 0 when `KELPI_PANE_ID` is unset.
 4. Parse `--message`, `--title`, `--body`, `--agent`.
@@ -528,7 +537,78 @@ The count is attached to the payload as `background_tasks` (a JSON **number**) o
 }
 ```
 
+Since #387 the payload may also carry hook fields copied from stdin, each only when stdin
+carries it as a non-empty string: `notification_type` and `transcript_path` on
+`notification`; `last_assistant_message` (capped at 64 KiB of UTF-8 on a code point boundary,
+with `"last_assistant_message_truncated": true` only when cut) and `transcript_path` on
+`stop`; `transcript_path` on `session-start`; and `tool_name` on `notification --agent codex`
+(agent-lifecycle.md §3, wire-protocol.md §6.1).
+
 The command label used for warning attribution is `kelpi event <type>`.
+
+### 8.7 `kelpi event permission-request` (#388)
+
+Claude Code's `PermissionRequest` hook (installed with `"timeout": 5`, section 17). The one
+request/reply verb in the family: it asks the daemon for a decision and prints Claude's
+decision JSON on stdout (`packages/cli/src/commands/event.ts`, `handlePermissionRequest`).
+
+After steps 1 to 5 of section 8 (so outside Kelpi, with no `KELPI_PANE_ID`, the hook exits
+0 at once and sends nothing):
+
+1. `--agent codex`: exit 0 and send nothing (Codex decisions are out of scope; a warning
+   only under `KELPI_VERBOSE_HOOKS`).
+2. Read stdin as in section 8.1. No stdin, or a `tool_name` that is missing, empty or not a
+   string: exit 0 and send nothing.
+3. Send this request and read one reply line (`sendJSONAndReadReply`, `timeoutSeconds: 3`):
+
+```json
+{
+  "command": "permission-request",
+  "pane_id": "<KELPI_PANE_ID>",
+  "tool_name": "Bash",
+  "tool_input": {"command": "mv a b"}, // stdin's object; {} when absent or not an object
+  "mcp_server": "linear",              // only when stdin carries it as a non-empty string (MCP tools)
+  "cwd": "/work/app",                  // only when non-empty
+  "permission_mode": "default",        // only when non-empty
+  "session_id": "...",                 // only when non-empty
+  "profile": "work"                    // only beside session_id, when KELPI_PROFILE is non-empty
+}
+```
+
+   `profile` rides beside `session_id` as on the other verbs, since a PermissionRequest may be
+   the first hook after a missed SessionStart and its dual-fire binds the session. No `agent`.
+   The other stdin fields Claude sends (`transcript_path`,
+   `permission_suggestions`, `scratchpad_dir`, `prompt_id`, `effort`, `hook_event_name`) are
+   not forwarded.
+4. Print according to the reply, then exit 0:
+
+| Reply | stdout |
+| :- | :- |
+| `{"ok":true,"behavior":"allow"}` | `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}` and a newline |
+| `{"ok":true,"behavior":"deny","message":"<m>"}` | `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"<m>"}}}` and a newline; `message` omitted when the reply has none or an empty one |
+| `{"ok":true,"behavior":"abstain"}`, any other behavior, a reply without `ok:true`, `{"ok":false,"error":...}`, an empty reply, invalid JSON, a transport failure | nothing |
+
+A deny never carries `interrupt`: Claude drops the message and treats it like the user
+pressing Escape. The reply's `provider` field is not printed.
+
+Timeouts: the daemon answers within about 2 s; the reply read times out after 3 s of
+silence; and a hard guard ends the process with exit 0 and nothing printed 3.5 s after the
+verb starts, whatever the transport is doing (a refused pane route alone is retried for 5 s,
+section 5). The guard is a `setTimeout` that calls `process.exit(0)`, cleared as soon as a
+decision is made, so a fast answer exits at once. Claude keeps a hook running even after the
+user answers its prompt, so the CLI bounds its own runtime; the installed 5 s hook timeout is
+the backstop.
+
+The guard can only fire once stdin is read (`readStdinJSON` reads it synchronously);
+Claude's 5 s hook timeout covers a stdin that never closes.
+
+The wire request and reply are in [wire-protocol.md §6.1.1](wire-protocol.md), and the
+provider contract in [plugin-services.md, "Agent permission decisions"](plugin-services.md).
+
+Fail open: a silent exit 0 is "no decision" to Claude, which shows its normal permission
+prompt. Every failure therefore ends at the prompt, never at "allow". Transport failures exit
+0 through the section 5.6 path; `ok:false`, empty and invalid replies and the guard print a
+`Warning:` line to stderr only under `KELPI_VERBOSE_HOOKS`.
 
 ---
 
@@ -688,7 +768,7 @@ sole-leaf pane (no sibling). Reply:
 ### 9.7 `kelpi pane send`
 
 ```
-kelpi pane send [--bare] [--json] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
+kelpi pane send [--bare] [--json] [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <command...>
 ```
 
 - Help to stdout, exit 0.
@@ -706,8 +786,22 @@ kelpi pane send [--bare] [--json] --target <name-or-uuid> [--workspace <name-or-
   ```
 
   Note `bare` is always present (boolean).
-- Empty reply => success, exit 0, silent (6.5).
-- `--json`: reply minus `ok`, compact sorted.
+- `--if-revision <n>` (#390): `n` must parse as a non-negative integer (0 allowed), else
+  `kelpi pane send: --if-revision must be a non-negative integer`, exit 1, nothing sent. It is
+  parsed after `--target` and before the empty-text check, and sent as `if_revision` (key
+  present only when the flag is given). If the pane's screen revision no longer equals `n`
+  the daemon replies `{"ok":false,"code":"SCREEN_CHANGED","revision":N}`, nothing is typed, and
+  the CLI prints `kelpi pane send: screen changed (revision N)` to stderr with empty stdout
+  and exit 1 (also under `--json`). Every other error reply keeps its wording. Unlike
+  `--bare`/`--json`, a trailing `--if-revision` with no value does not join the text: it fails
+  with the same `must be a non-negative integer` line, exit 1, nothing sent. If the flag was
+  given but the ack has no numeric `revision`, or the reply is empty, the daemon predates #390
+  and did not check: the CLI keeps the ack and exit 0 and adds
+  `kelpi pane send: this Kelpi did not check --if-revision; the text was sent unguarded` on stderr.
+- Empty reply => success, exit 0, silent (6.5), apart from the unguarded warning above when
+  `--if-revision` was given.
+- `--json`: reply minus `ok`, compact sorted (includes `revision` when the guard was given
+  and the daemon honoured it).
 - Default ack: `sent to <id>` or `sent (bare) to <id>` (using the reply's `bare` field),
   plus optional ` (<label>)` and ` in workspace <ws>`.
 
@@ -717,16 +811,23 @@ keystroke. Reply includes resolved `pane_id`, `label?`, `workspace_name?`, `bare
 ### 9.8 `kelpi pane send-key`
 
 ```
-kelpi pane send-key --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
+kelpi pane send-key [--if-revision <n>] --target <name-or-uuid> [--workspace <name-or-uuid>] <key>
 ```
 
 - `--target` required (non-empty), else usage line to stderr, exit 1.
+- `--if-revision <n>` (#390) works as on `pane send`: parsed right after the `--target` check and
+  before the unknown-option check, non-negative integer else
+  `kelpi pane send-key: --if-revision must be a non-negative integer`, exit 1. A stale value
+  prints `kelpi pane send-key: screen changed (revision N)` to stderr, exit 1. A flag given
+  with no value fails with the same `must be a non-negative integer` line as `pane send`, exit 1.
+  An ack without a numeric `revision` keeps its stdout and exit 0 and adds
+  `kelpi pane send-key: this Kelpi did not check --if-revision; the key was sent unguarded` on stderr.
 - Remaining dash-prefixed tokens => `kelpi pane send-key: unknown option <tok>` + usage,
   exit 1. Exactly one positional key token required, else usage + the valid-key list line:
   `       <key> is one of: enter, return, tab, escape, esc, space, backspace, up, down, left, right, ctrl-c`.
 - The CLI does **not** validate the key name; the server rejects unknown names with a
   structured error before touching the surface.
-- Payload: `{"command":"pane-send-key","target":...,"key":<verbatim>, pane_id?, workspace?}`.
+- Payload: `{"command":"pane-send-key","target":...,"key":<verbatim>, pane_id?, workspace?, if_revision?}`.
 - Bespoke empty-reply error (6.5). No `--json`.
 - Ack: `sent <key> to <id>[ (<label>)][ in workspace <ws>]` where `<key>` is the reply's
   `key` field, falling back to the input lowercased.
@@ -839,7 +940,7 @@ kelpi pane list [--workspace <name-or-id> | --current] [--json] [--no-header]
 ### 9.12 `kelpi pane capture`
 
 ```
-kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback]
+kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lines N] [--scrollback] [--settle <ms>] [--json]
 ```
 
 - Help to stdout, exit 0. Leftovers rejected with hint
@@ -847,13 +948,27 @@ kelpi pane capture [--target <name-or-uuid>] [--workspace <name-or-uuid>] [--lin
   never fall back to capturing the caller).
 - `--lines` must parse as a positive integer, else
   `kelpi pane capture: --lines must be a positive integer`, exit 1.
+- `--settle <ms>` (#390) must parse as a positive integer, else
+  `kelpi pane capture: --settle must be a positive integer`, exit 1 (checked after `--lines`).
+  The daemon waits until the pane has had no output for that long, giving up after 10 s
+  (larger values are clamped), then reads. A flag given with no value fails as
+  `kelpi pane capture: unknown option --settle` + usage.
+  The CLI's reply timeout grows by the daemon's 10 s settle cap, whatever `--settle` asked for
+  (a busy pane is answered only when the cap fires), on top of the usual 5 s or `KELPI_REPLY_TIMEOUT`.
 - With `--target`: payload includes `target` and (when `KELPI_PANE_ID` non-empty) `pane_id`
   for label scoping. Without: `requirePaneID()` (silent exit 0 outside) and `pane_id` is
   the subject.
-- Payload: `{"command":"pane-capture", target?, pane_id?, workspace?, lines?, scrollback?}`
-  (`scrollback` only present, as `true`, when the switch was given; `lines` a number).
-- Reply: `{ok:true, "text":"..."}`. On success the CLI writes the raw `text` bytes to
-  stdout **without appending a trailing newline** (captured output usually ends in one).
+- Payload: `{"command":"pane-capture", target?, pane_id?, workspace?, lines?, scrollback?, settle_ms?}`
+  (`scrollback` only present, as `true`, when the switch was given; `lines` and `settle_ms`
+  numbers, present only when given).
+- Reply: `{ok:true, "text":"...", revision, cursor:{row,col}, alt_screen, settled?}`. On success
+  the CLI writes the raw `text` bytes to stdout **without appending a trailing newline**
+  (captured output usually ends in one). This is unchanged by `--settle`.
+- `--json`: prints the reply minus `ok`, compact and key-sorted (the pane-family shape), so
+  `text`, `revision`, `cursor`, `alt_screen`, `settled?` (only with `--settle`), `pane_id`,
+  `workspace_id`, `workspace_name`, `label?`. Pass the `revision` to
+  `pane send --if-revision` / `pane send-key --if-revision` to refuse the send if the screen
+  changed since the capture.
 - Server contract: without `--scrollback` reads the visible viewport; with it, the full
   screen+scrollback. Non-terminal panes (markdown/scratchpad/diff) are refused with a
   typed `ok:false` error. `--lines N` limits to the last N lines.
@@ -913,26 +1028,37 @@ usage to stdout, exit 0; unknown action => `Unknown workspace action: <x>` +
 ### 10.1 `kelpi workspace list`
 
 ```
-kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
+kelpi workspace list [--group <name-or-id>] [--parent <name-or-id>] [--json] [--no-header]
 ```
 
 - Help to stdout, exit 0. Leftovers rejected.
-- Payload: `{"command":"workspace-list", group?}`.
+- Payload: `{"command":"workspace-list", group?, parent?}`. `--parent` lists only the
+  workspaces nested under that one (app-state-core.md §2.9); an unknown or ambiguous one is
+  an `ok:false` error. An empty or whitespace `--parent` (`--parent "$ME"` with `$ME` unset) is
+  refused before anything is sent: `kelpi workspace list: --parent needs a workspace name or id
+  (it was empty)`, exit 1. The filtered reply echoes the parent as top-level `parent_id`; when it
+  is missing (a daemon that predates nesting, which ignores `parent` and lists everything) the
+  CLI prints nothing and exits 1: `kelpi workspace list: the daemon did not apply --parent;
+  restart it on this build (its reply was not filtered, so nothing is printed)`.
 - Reply: `{ok:true, "workspaces":[...]}` in sidebar order (members of collapsed groups
-  included). Each entry (server contract): `id`, `name`, `color`, `pane_count`,
+  included, and each workspace followed by the workspaces nested under it). Each entry (server contract): `id`, `name`, `color`, `pane_count`,
   `is_active`, `created_at`, `last_accessed_at`, `labels` (always present, possibly `[]`),
   `muted` (always present; §10.7), optional `icon` (§10.9; absent for the letter avatar),
   optional `last_activity_at`, optional
   `agent_session_id`, optional
-  `group_id`/`group_name` (both absent for top-level), optional `repos` (the repo
+  `group_id`/`group_name` (both absent for top-level; a nested workspace reports its
+  parent's group), optional `parent_id`/`parent_name` (both absent unless nested), optional
+  `repos` (the repo
   associations: `repo_id`, `repo_name?`, `repo_path?`, `worktree_path`, `branch?`; absent
   when there are none; `--json` only). Timestamps ISO 8601.
 - `--group` scoping an unknown/ambiguous group is an `ok:false` error (distinct from an
   empty group => empty list, exit 0).
 - `--json`: the array unwrapped, compact, sorted keys.
-- Table columns: `ID  NAME  GROUP  PANES  ACTIVE  LABELS`.
+- Table columns: `ID  NAME  GROUP  PANES  ACTIVE  LABELS`, with `PARENT` after GROUP only
+  when some listed workspace is nested (so the table is unchanged for anyone who never nests).
   - ID short-form `first8…last4` (>=12 chars only).
   - GROUP: `group_name` or `-`.
+  - PARENT: `parent_name` or `-`.
   - ACTIVE: `●` when `is_active` else `-`.
   - LABELS: comma-joined (no spaces) or `-`.
   - Width computation like pane list; LABELS (last column) unpadded. Note: LABELS does not
@@ -943,13 +1069,37 @@ kelpi workspace list [--group <name-or-id>] [--json] [--no-header]
 ### 10.2 `kelpi workspace create`
 
 ```
-kelpi workspace create [--name "..."] [--path /dir] [--color blue] [--group <name>]
+kelpi workspace create [--name "..."] [--path /dir] [--color blue]
+                     [--group <name> | --parent <name-or-id> | --nested]
                      [--profile <name>] [--repo <path> | --no-repo] [--muted] [--icon <emoji>]
                      [--json]
 kelpi workspace create --worktree <name> [--branch <name>] [--repo <path>]
-                     [--update-main | --no-update-main] [--group <existing>] [--muted]
+                     [--update-main | --no-update-main]
+                     [--group <existing> | --parent <name-or-id> | --nested] [--muted]
                      [--icon <emoji>] [--json]
 ```
+
+- Nesting (app-state-core.md §2.9): `--parent <name-or-id>` sends `parent`; `--nested` sends
+  `parent_pane_id` = `KELPI_PANE_ID`, nesting under the caller's own workspace (an orchestrator
+  spawning a worker). Errors before anything is sent, exit 1: `--parent` with `--nested`
+  (`workspace create can't take both --parent and --nested`); either with `--group`
+  (`workspace create can't take --group with --parent or --nested: a nested workspace follows
+  its parent's group`); `--nested` with no `KELPI_PANE_ID` (`workspace create --nested must run
+  inside a Kelpi pane (KELPI_PANE_ID is not set); use --parent <name-or-id>`); an empty or
+  whitespace `--parent` (`kelpi workspace create: --parent needs a workspace name or id (it was
+  empty)`). With
+  `--worktree` and no `--repo`, a nested create defers the source repo to the parent's group
+  exactly as `--group` does (cwd as `path`). Timeout 30 s, as with `--group`.
+- A reply with `parent_lost: true` (the parent was deleted, or nested, while a `--worktree`
+  create's git work ran; the workspace was made at the top level) exits 1 with
+  `kelpi workspace create: <parent_lost_reason> (workspace <name> (<id>) was created at the top
+  level)`. A reply with neither `parent_id` nor `parent_lost` is a daemon that predates nesting,
+  and exits 1 with the `restart it on this build` message.
+- Nesting confirmation: when `--parent`/`--nested` was passed and the reply has no
+  `parent_id` (a daemon that predates nesting created it at the top level), stderr gets
+  `kelpi workspace create: the daemon did not nest the workspace; restart it on this build
+  (workspace <name> (<id>) was created at the top level)`, exit 1; `--json` prints the reply
+  first. The human line says ` nested under <parent_name>` where it would say ` in group <g>`.
 
 - Help to stdout, exit 0. Leftovers rejected. `--update-main` with `--no-update-main`, or
   `--repo` with `--no-repo`, => an error line, exit 1, nothing sent. An `--icon` that is not
@@ -1012,13 +1162,20 @@ that is not inside a git repository => `ok:false`, nothing created.
 ### 10.3 `kelpi workspace move`
 
 ```
-kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
+kelpi workspace move <name-or-id> (--group <name> | --top-level | --parent <name-or-id>) [--index N]
 ```
 
 - Help to stdout, exit 0. Missing name-or-id => usage to stderr, exit 1.
-- Neither/both of `--group`/`--top-level`:
-  `workspace move requires --group <name> or --top-level` /
-  `workspace move can't take both --group and --top-level`, exit 1.
+- None or more than one of `--group`/`--top-level`/`--parent`:
+  `workspace move requires --group <name>, --top-level or --parent <name-or-id>` /
+  `workspace move takes only one of --group, --top-level and --parent`, exit 1.
+- `--parent` (app-state-core.md §2.9) sends the request/response
+  `{"command":"workspace-nest","name":<name-or-id>,"parent":<name-or-id>, index?}` instead, and
+  prints `nested workspace <name> under <parent>`; a refusal (the parent is nested itself, the
+  workspace has nested ones, unknown names) is the reply's error on stderr, exit 1. An empty or
+  whitespace `--parent` is refused before anything is sent (`kelpi workspace move: --parent
+  needs a workspace name or id (it was empty)`), exit 1.
+  `--group` / `--top-level` also take a nested workspace out of its parent.
 - `--index` must parse as an integer, else `--index must be an integer`, exit 1.
 - Fire-and-forget payload: `{"command":"workspace-move","name":<name-or-id>, group?, index?}`
   where `index` is a native JSON number and `--top-level` is expressed by **omitting**
@@ -1028,8 +1185,18 @@ kelpi workspace move <name-or-id> (--group <name> | --top-level) [--index N]
 ### 10.4 `kelpi workspace delete`
 
 ```
-kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--prune-worktree [--delete-branch]] [--json]
+kelpi workspace delete <name-or-id> [<name-or-id> ...] [--force|-y] [--cascade] [--prune-worktree [--delete-branch]] [--json]
 ```
+
+- `--cascade` adds `"cascade":true`: the workspaces nested under each target are deleted with
+  it (app-state-core.md §2.9); their ids come back as `deleted_children`, copied into the
+  `--json` record, and the human line becomes `deleted workspace <name> and N nested
+  workspace(s)`. Without it they move up into the deleted workspace's place.
+- A later target that an earlier target's cascade already deleted (`kelpi workspace delete boss
+  worker --cascade`, with `worker` nested under `boss`) is not a failure: its `workspace not
+  found` reply is matched against the earlier replies' `deleted_children` ids and
+  `deleted_child_names`, and it prints `workspace worker was already deleted with boss`; its
+  `--json` record is `{id, ok: true, deleted_with: "boss"}`.
 
 - Help to stdout, exit 0.
 - `--force` and `-y` are popped **unconditionally** (both consumed even when passed
@@ -1250,13 +1417,14 @@ kelpi group list [--json] [--no-header]
 
 - Leftover args (after the two switches) => usage line, exit 1.
 - Payload `{"command":"group-list"}`; reply `{ok, "groups":[...]}` where each group has
-  `id`, `name`, `color?`, `workspaces: [{id, name}]` in sidebar order, and, only while the
+  `id`, `name`, `color?`, `workspaces: [{id, name}]` in sidebar order (each member followed by
+  the workspaces nested under it, which add `parent_id` / `parent_name`), and, only while the
   group has a default repository (§11.7), `repo: {id, name, path}` and `create_worktree`.
 - `--json`: the array unwrapped, compact sorted. Empty => `[]`, exit 0.
 - Table: `ID  NAME  COLOR  REPO  WORKSPACES`; ID short-uuid; COLOR falls back `-`; REPO is
   the repository's name, suffixed ` +worktree` when the worktree switch is on, `-` when the
   group has none; WORKSPACES is `name (shortid)` pairs comma-joined (name-less members print
-  just the short id), `-` when empty; last column unpadded.
+  just the short id; a nested one adds ` under <parent>`), `-` when empty; last column unpadded.
 
 ### 11.2 `kelpi group create <name> [--color blue]`
 
@@ -1949,6 +2117,7 @@ const expectedHooks: Array<[event: string, command: string]> = [
   ["SessionStart",     "kelpi event session-start"],
   ["SessionEnd",       "kelpi event session-end"],
   ["UserPromptSubmit", "kelpi event start"],
+  ["PermissionRequest", "kelpi event permission-request"],
 ];
 const sessionStartSources = ["startup", "resume", "clear", "compact"];
 ```
@@ -2098,14 +2267,15 @@ Steps, in order:
    is unknowable). Hooks run in the agent's non-interactive shell, so a bare `kelpi` is only
    written when `PATH` really resolves it.
 3. **Claude Code hooks** into `<claude-dir>/settings.json`
-   (`packages/cli/src/install/hooks.ts:100`): the five `expectedHooks` events, each as one
+   (`packages/cli/src/install/hooks.ts:100`): the six `expectedHooks` events, each as one
    matcher-less group with one `{"type":"command","command":"<prefix> event <x>"}` hook
    (matcher-less SessionStart fires for all sources: startup/resume/clear/compact), merged per
    section 18. Absent file => created (directory `mkdir -p`'d); existing file => copied to
    `<file>.kelpi-backup` then rewritten, or reported `already up to date` when the merged
    bytes are identical (no write, no backup); not valid JSON => `failed` with
    `<file> is not valid JSON — refusing to overwrite it. Fix or move the file, then re-run.`,
-   nothing written.
+   nothing written. The `PermissionRequest` hook (#388, section 8.7) comes last and also
+   carries `"timeout": 5` (seconds); an install from before it gains it on a re-run.
 4. **Skill install** (`packages/cli/src/install/skill.ts:81`): `SKILL.md` copied to
    `<claude-dir>/skills/kelpi-agentic/SKILL.md` from `--skill-source` (exclusive when given),
    else `<bundle dir>/skills/kelpi-agentic`, else `<bundle dir>/../resources/skills/kelpi-agentic`
@@ -2229,7 +2399,7 @@ optional `pane_id`, `reuse`, `focus` and, from `kelpi md` only, `as: "markdown"`
 Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`,
 `pane-resize`, `pane-send`, `pane-send-key`, `pane-move-adjacent`, `pane-list`,
 `pane-capture`, `pane-sync`, `pane-sync-exclude`, `workspace-list`, `workspace-create`,
-`workspace-delete`, `workspace-label`, `workspace-mute`, `workspace-rename`,
+`workspace-delete`, `workspace-nest`, `workspace-label`, `workspace-mute`, `workspace-rename`,
 `workspace-icon`, `group-list`, `group-set-repo`, `group-reorder`, `group-sort`,
 `graft-start`, `graft-stop`, `graft-status`, and the web family: `web-open`, `web-navigate`, `web-url`, `web-back`,
 `web-forward`, `web-reload`, `web-capture`, `web-tabs`, `web-tab-new`, `web-tab-close`,
@@ -2237,7 +2407,7 @@ Request/response: `ping`, `pane-split`, `pane-create`, `pane-close`, `pane-name`
 `web-inspect-result`, `web-private`, `web-cookies-list`, `web-cookies-clear`,
 `web-cookies-delete`, `web-click`, `web-type`, `web-q-text`, `web-q-attr`, `web-q-count`,
 `web-q-exists`, `web-q-dom`, `web-select`, `web-scroll`, `web-hover`, `web-key`, `web-exec`,
-`web-wait`.
+`web-wait`, and `permission-request` (the one event verb that waits for a reply, section 8.7).
 
 ---
 
@@ -2421,7 +2591,8 @@ template to `pane`, and refuses an existing destination directory. It returns
 [plugin development](plugin-development.md#create-and-edit-a-project).
 
 `validate` reports format, ID/name/version, API version, dependencies, content revision,
-file count, total bytes and per-file sizes/digests. `pack` requires a source directory and
+file count, total bytes and per-file sizes/digests, plus the `kelpi` verbs the plugin
+declares under `cli` (`name`, `command`, `summary`; see [plugin CLI verbs](#plugin-cli-verbs)). `pack` requires a source directory and
 an unused output path in an existing directory outside that source. Its report adds the
 artifact path, archive size and artifact SHA-256. Packing does not install or publish it.
 The [package contract](plugins.md#package-format) defines portable path and size limits.
@@ -2450,6 +2621,90 @@ object. Native document/terminal/browser replacements attach to existing native 
 stored overrides; writing requires both `--key` and a JSON `--value`. Service calls default
 to version 1 and require a positive integer version; `service-select ... default` clears
 the saved provider choice. The [plugin reference](plugins.md) covers API behavior and scope.
+
+### Plugin CLI verbs
+
+Source: [plugin-cli.ts](../packages/cli/src/commands/plugin-cli.ts). A plugin's
+`contributes.cli` entry adds a top-level verb that runs one of its commands
+([CLI verbs](plugins.md#cli-verbs) covers the manifest, collisions and the command's side):
+
+```text
+kelpi <verb> [--json] [argv...]
+```
+
+[`examples/plugins/cli-lab`](../examples/plugins/cli-lab) is a runnable example: it adds
+`kelpi hello`, which prints hello and the words you pass.
+[`examples/plugins/run-suggested`](../examples/plugins/run-suggested) adds
+`kelpi run-suggested [--target <pane>] [--print | --yes]`, which prints or runs the command
+Claude last suggested in a pane (exit 1 when there is none, 2 on a usage error).
+
+- **Dispatch.** Built-in subcommands are matched first, without contacting the daemon. Any
+  other word that passes the verb name rule is sent as one `plugin` request with action `cli` and text
+  `{verb, argv, cwd, isTTY, json, paneID?}`: `cwd` is the CLI's working directory, `isTTY`
+  whether its stdout is a terminal, and `paneID` the non-empty `KELPI_PANE_ID`. The daemon
+  derives the workspace from the pane. The read timeout is 35 seconds, as for `plugin run`.
+  The word must pass the manifest's name rule first (`isCliVerbName` in `@kelpi/protocol`: one
+  lowercase word of at most 32 characters). When the working directory has been removed, `cwd`
+  is a non-empty `PWD`, else the home directory. The daemon gives the plugin command 30 seconds,
+  activation included, so a longer verb fails with
+  `kelpi <verb>: plugin invocation timed out: command:<id>`, exit 1, before the CLI's own
+  35 second read timeout.
+- **argv.** Every word after the verb, in order. Every `--json` before a `--` is the CLI's: it
+  is removed and sets `json`. The `--` and every word after it reach the plugin unchanged, so
+  `kelpi hello -- --json` passes `["--", "--json"]`. `kelpi <verb> --help` is ordinary argv for
+  the plugin to answer; the CLI prints no help of its own.
+- **Output.** The result is `{text?, json?, exitCode?, stderr?}`. A non-empty `stderr` goes to
+  stderr first. Without `--json`, a non-empty `text` goes to stdout with a trailing newline
+  added if missing; a result with no `text` prints nothing. With `--json`, stdout gets
+  `JSON.stringify(json, null, 2)`, or `{"text": ...}` when the result has no `json`. A result
+  over 256 KiB of JSON fails that call alone (`plugin result exceeds the 256 KiB limit`, exit 1).
+- **Exit code.** `exitCode` when it is an integer from 0 to 255; 0 when absent; 1 for any
+  other value.
+- **Unknown.** When no installed plugin declares the verb, the daemon answers
+  `unknown kelpi verb: <verb>` and the CLI prints `Unknown command: <verb>` and the usage block
+  to stderr, exit 1, exactly as before plugin verbs. A word starting with `-` gets the same
+  output without a request. A daemon from before plugin verbs counts as declaring none; the
+  CLI adds a line suggesting `kelpi daemon restart`. Any other word that fails the name rule
+  (the pattern `[a-z][a-z0-9-]*`, at most 32 characters: so an empty word, uppercase, a space,
+  an underscore, a dot or a leading digit all fail) also gets the
+  `Unknown command` output without a request. The daemon's reply must be exactly
+  `unknown kelpi verb: <verb>`: a plugin's own error that merely starts with
+  `unknown kelpi verb` is printed as an error, as below.
+- **Errors.** Any other `ok:false` prints `kelpi <verb>: <error>` to stderr and exits 1, for
+  example `kelpi hello: plugin acme.hello is disabled`. An empty or malformed reply is the
+  usual `no response from Kelpi` or `invalid JSON response`, attributed to `kelpi <verb>`.
+- **No reply.** Three cases, told apart by the transport's failure (§5.4):
+  - connected, then the socket failed before any byte came back (`emptyReply`): the verb may
+    already have run, so the CLI prints `kelpi <verb>: no response from Kelpi`, exit 1;
+  - `KELPI_REQUIRE_SOCKET` is set and `KELPI_SOCKET` names no tcp route
+    (`requiredSocketUnmet`): the same `Error:`/`Repair:` route diagnostic a built-in prints
+    (§5.5), exit 1;
+  - no connection at all: the "No daemon" output below.
+- **No daemon.** When no daemon can be reached, the word cannot be resolved: the CLI prints
+  `Unknown command: <verb>`, then one line saying plugin verbs need a running Kelpi daemon,
+  then the usage block, exit 1. Inside a pane the request first waits out the pane-route retry
+  (`KELPI_ROUTE_RETRY_MS`), like any built-in command, so a verb run while the daemon restarts
+  reaches the new one.
+- **Help.** `kelpi --help` prints the usage block, then asks the daemon for `cli-list` and
+  appends a block, on stderr like the rest:
+
+  ```text
+  Plugin commands:
+    # CLI Lab
+    kelpi hello  Print hello and the words you pass
+  ```
+
+  Verbs are grouped under their plugin's name, sorted, with summaries aligned and
+  `(disabled)` after a verb whose plugin is disabled (running it fails as above). There is no
+  block when no plugin declares a verb, when no daemon answers, on any error, or when the
+  answer takes longer than 2 seconds. That bound is wall clock over the whole lookup, connect
+  included, so a peer that stalls or trickles bytes cannot hold help open. This request skips the pane-route retry (unless
+  `KELPI_ROUTE_RETRY_MS` is set explicitly), so help answers at once inside a pane with no
+  daemon. The exit code stays 0. A bare `kelpi` with no arguments
+  prints only the usage block.
+
+There is no standard input and no interactive prompt: a verb that needs a confirmation takes a
+flag such as `--yes`.
 
 ### Watching and live development
 

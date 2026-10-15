@@ -86,6 +86,49 @@ return arrays and mutation helpers unwrap the successful reply. Snapshots retain
 state shape, including epoch/sequence. `agents.reportStart` reports lifecycle state; launching
 arbitrary programs remains an explicit terminal or process operation.
 
+**Prompts from a backend.** A backend asks the user with `api.ui.showDialog`, `showQuickPick`,
+`showInput` and `showNotification`. They take a view's options and resolve with the choice, or null:
+
+```ts
+api.commands.register('example.my-board.run', async () => {
+    const action = await api.ui.showDialog({ title: 'Run it?', message: 'Run the tests?', cancelID: 'cancel',
+        actions: [{ id: 'cancel', label: 'Cancel' }, { id: 'run', label: 'Run', kind: 'primary' }] });
+    return action;
+});
+```
+
+The prompt opens in the window whose shortcut, palette or menu ran the command, or in the window
+named by a second argument `{ windowID }`. With neither, as for `kelpi plugin run` or a run from a
+phone or the browser UI (only Kelpi app windows present prompts), it rejects with
+a `KelpiError` whose `code` is `NO_WINDOW`. The
+[UI guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-ui.md#prompts-from-a-backend)
+covers lifetime, limits and the command timeout.
+
+To type into a terminal only if it still shows what you read, read it with its revision and pass
+that back as `ifRevision` on `terminal.send` or `terminal.sendKey`. `terminal.read` resolves to
+`{ text, revision, cursor, altScreen, settled? }`; `settleMs` first waits until the pane has had
+that long without output (capped at 10 s, `settled: false` when the cap came first or the pane's terminal was restarted during the wait). If the screen
+changed in between, nothing is typed and the call rejects with `KelpiError` code `SCREEN_CHANGED`,
+whose `details.revision` is the current revision. The revision counts the output the daemon has
+fed the pane, and resizes; it is not persisted, but a new daemon seeds its counter from the clock,
+past any value an earlier one could plausibly have issued, so a revision from before a restart
+does not match by accident.
+
+Against a daemon from before #390, `terminal.read` rejects with `KelpiError` code `UNSUPPORTED`
+rather than returning a screen without a revision.
+An `ifRevision` that is not a non-negative integer rejects with `INVALID_ARGUMENT` before anything
+is sent, and a guarded send whose ack carries no `revision` (a daemon that did not check the guard,
+so the input was already typed) rejects with `UNSUPPORTED`.
+
+```ts
+const screen = await api.terminal.read(pane.paneID, { settleMs: 300 });
+if (screen.text.includes('Continue? [y/N]')) {
+    await api.terminal.send(pane.paneID, 'y', { ifRevision: screen.revision }).catch(error => {
+        if (error.code !== 'SCREEN_CHANGED') throw error; // otherwise read again and decide afresh
+    });
+}
+```
+
 A workspace can be muted so its agents raise no desktop notification, sound or dock bounce:
 `api.workspaces.create({ muted: true })`, `api.workspaces.setMuted(workspaceID, muted?)` (omit
 `muted` to toggle; it resolves with the resulting state) and `muted` on every
@@ -95,6 +138,13 @@ events, marked `muted: true`, so a conductor plugin can watch its muted children
 `notification` message to any window for them, but plugin views do see the event, so a view must
 honour `muted` and never echo it through `ui.showNotification` or `ui.notify`: that would undo the
 owner's mute.
+
+`api.agents.onEvent(listener)` delivers one typed `AgentHookEvent` per agent hook Kelpi handles
+(`agent.event`, also visible through `api.events.on`), whether or not a notification is shown:
+the verb, pane, workspace, agent kind, session id and status after the hook, plus the hook's
+fields such as `notificationType` and `lastAssistantMessage`. It returns an unsubscribe
+function. A muted workspace's events carry `muted: true` here too. See docs/plugins.md, State,
+events, focus, and appearance.
 
 A workspace's sidebar icon uses the flat spelling `"emoji:🔥"`:
 `api.workspaces.setIcon(workspaceID, icon)` sets it (`null` goes back to the letter),
@@ -125,10 +175,18 @@ last-active workspace. Raw `api.command` retains its explicit wire-field semanti
 Typed command helpers reject failures with `KelpiError` (`code`, `method`, `details`).
 `COMMAND_FAILED` retains the original reply in `details`, including fields such as
 `active_agents` or partial graft failures. `TRANSPORT_ERROR` means the host call rejected;
-`INVALID_REPLY` means the daemon returned an invalid envelope. The raw `api.command(payload,
+`INVALID_REPLY` means the daemon returned an invalid envelope. `INVALID_ARGUMENT` is an empty
+`parentID`, refused before anything is sent. A nested create or a `parentID` list that the daemon
+could not honour rejects rather than quietly returning a top-level workspace or every workspace:
+`UNSUPPORTED` when the daemon predates nested workspaces, `PARENT_LOST` when the parent was deleted
+while a worktree create ran (the workspace was created at the top level; `details` names it). The raw `api.command(payload,
 context)` remains compatible with the CLI/UI wire protocol and returns `{ok:false}` replies
 unchanged. Fire-and-forget operations such as layout selection and group rename resolve when
 dispatch is acknowledged; their existing daemon no-op semantics still apply.
+In the typed command helpers, only `SCREEN_CHANGED` (the guarded send refusal, #390) rejects with
+its own code instead of `COMMAND_FAILED`, with the same `details`. Every other refusal, a
+`PLUGIN_VETO` from a command hook included, still rejects with `COMMAND_FAILED`, with the reply and
+its `code` in `details`. `api.browser` calls still reject with `COMMAND_FAILED`.
 
 ## Terminal renderers
 
@@ -231,6 +289,9 @@ with Kelpi. `kelpi.process@1` backs managed `api.process.exec`; `kelpi.files@1` 
 or all internal file access. See the [service guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-services.md) for native
 reach, limits, fallback behavior, and the complete Git method catalog.
 
+`kelpi.agent.permissions@1` decides Claude's permission requests: its bundled `decide` always
+abstains, and a selected provider gets 2 seconds to return `allow`, `deny` or `abstain`.
+
 For provider authors, `BuiltinProviderMethods<'kelpi.content.render'>` describes a complete
 implementation. An explicit type argument on registration checks the same contract:
 
@@ -255,7 +316,7 @@ also cancels queued callbacks; hidden retained tabs do not relay host keyboard s
 `api.contributions.get/update` reads and atomically patches the current plugin instance's
 volatile context and native item overrides. Browser views also have `ui.showQuickPick`,
 `ui.showInput`, `ui.showDialog` and `ui.showNotification`, returning the user's choice or null
-on cancellation. These prompts belong to their attached view and hosting window. See the
+on cancellation. These prompts belong to their attached view and hosting window (a backend's are described under Prompts from a backend above). See the
 [UI guide](https://github.com/benfriebe/kelpi/blob/main/docs/plugin-ui.md), [types](ui.d.ts), and [UI Lab](https://github.com/benfriebe/kelpi/tree/main/examples/plugins/ui-lab)
 for conditions, grouped settings, scope and lifetime rules.
 
@@ -266,6 +327,30 @@ kelpi plugin service-select kelpi.files example.my-board.files
 kelpi plugin service-select kelpi.files default
 ```
 
+
+## CLI verbs
+
+`contributes.cli` maps a one-word `kelpi <verb>` onto one of the plugin's commands:
+
+```json
+"cli": [{ "name": "hello", "command": "example.my-board.hello", "summary": "Say hello to the arguments" }]
+```
+
+The command receives a `CliInvocation` (`argv`, `cwd`, `isTTY`, `json`) as its args and returns a
+`CliResult` (`text`, `json`, `exitCode`, `stderr`), so `kelpi hello a b` prints `hello a b`:
+
+```ts
+import type { CliInvocation, CliResult } from '@kelpi/plugin-sdk';
+
+api.commands.register('example.my-board.hello', (args): CliResult => {
+    const { argv, json } = args as CliInvocation;
+    return json ? { json: { argv } } : { text: `hello ${argv.join(' ')}` };
+});
+```
+
+Names are lowercase words of at most 32 characters. Built-in verbs and a verb another installed
+plugin provides are refused. See [CLI verbs](https://github.com/benfriebe/kelpi/blob/main/docs/plugins.md#cli-verbs)
+for the rules and what the CLI prints.
 
 ## Toolbar and status replacements
 

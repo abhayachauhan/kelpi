@@ -2,6 +2,7 @@ import type { AgentsAPI, ApplicationSettingsAPI, GitAPI, GroupsAPI, LayoutAPI, P
 import type { BuiltinProviderMethods, BuiltinServiceArgs, BuiltinServiceID, BuiltinServiceMethod, BuiltinServiceResult, ProcessExecResult } from './services.js';
 import type { ContributionsAPI } from './contributions.js';
 import type { WindowUIServices } from './ui.js';
+import type { BackendUIServices } from './ui.js';
 import type { WindowChromeAPI } from './chrome.js';
 import type { WindowInteractionAPI } from './interaction.js';
 import type { WindowSettingsAPI } from './settings.js';
@@ -36,7 +37,7 @@ export class KelpiError extends Error {
 }
 export type HostCall = (method: string, args: Data) => Promise<unknown>;
 /** Adapter used by Kelpi's browser and backend transports. */
-export function createKelpiAPI(transport: HostCall, getContext?: () => Partial<Context>): Omit<KelpiAPI, 'events'>;
+export function createKelpiAPI(transport: HostCall, getContext?: () => Partial<Context>, on?: KelpiAPI['events']['on']): Omit<KelpiAPI, 'events'>;
 export interface KelpiAPI {
     /** Method names and the raw command catalog are documented in docs/plugins.md. */
     call<T = Json>(method: string, args?: Data): Promise<T>;
@@ -80,7 +81,21 @@ export interface HookInvocation {
     source: 'cli' | 'ui' | 'plugin'; phase: 'before' | 'after'; result?: Json;
 }
 export type HookDecision = { allow: true } | { allow: false; reason: string };
+/**
+ * The args a command receives when it runs as a `kelpi <verb>` from the manifest's `contributes.cli`
+ * (#391). `argv` is every word after the verb, `--help` included; `json` is true when the caller
+ * passed `--json`, which the CLI removes from `argv`.
+ */
+export type CliInvocation = { argv: string[]; cwd: string; isTTY: boolean; json: boolean };
+/**
+ * What a `contributes.cli` command returns. The CLI prints `stderr` to standard error, then `text`
+ * (or `json` with `--json`), and exits with `exitCode`, 0 when absent. The whole result is limited
+ * to 256 KiB of JSON; a larger one fails only that call, so page or truncate a long dump.
+ */
+export type CliResult = { text?: string; json?: Json; exitCode?: number; stderr?: string };
 export interface BackendAPI extends KelpiAPI {
+    ui: KelpiAPI['ui'] & BackendUIServices;
+    /** A command mapped from `contributes.cli` receives a `CliInvocation` as its args and should return a `CliResult`. */
     commands: KelpiAPI['commands'] & { register(id: string, handler: (args: Data, context: Context) => Json | void | Promise<Json | void>): Dispose };
     hooks: { register(id: string, handler: (invocation: HookInvocation) => HookDecision | void | Promise<HookDecision | void>): Dispose };
     providers: {

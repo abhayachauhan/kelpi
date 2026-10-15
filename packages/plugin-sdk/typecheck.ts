@@ -10,6 +10,7 @@ import './pane-chrome.typecheck.js';
 import './pane-search.typecheck.js';
 import './terminal.typecheck.js';
 import './browser.typecheck.js';
+import type { CliInvocation, CliResult } from './index.js';
 
 async function authoring(api: BackendAPI): Promise<void> {
     const contributions = await api.contributions.update({ context: { ready: true, count: 3, removed: null }, items: {
@@ -29,6 +30,14 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.workspaces.create({ name: 'child', muted });
     const chef = await api.workspaces.create({ name: 'chef', icon: 'emoji:👩‍🍳' });
     await api.workspaces.setIcon(first.id, chef.icon ?? first.icon ?? null);
+    // Nested workspaces: one level under a parent, confirmed by the create reply.
+    const worker = await api.workspaces.create({ name: 'worker', parentID: first.id });
+    const parentName: string | undefined = worker.parentName ?? first.parentName;
+    const nested = await api.workspaces.nest(chef.workspaceID, first.id, { index: 0 });
+    const position: number = nested.index;
+    await api.workspaces.setChildrenCollapsed(first.id, position === 0 && parentName !== undefined);
+    await api.workspaces.list({ parentID: first.id });
+    await api.workspaces.remove(first.id, { cascade: true });
     const associations: RepositoryAssociation[] = await api.git.status(first.id);
     await api.panes.create({ workspaceID: first.id, name: associations[0]?.repoName });
     // #295: the helpers focus by default; `focus: false` opens the pane in the background.
@@ -39,9 +48,34 @@ async function authoring(api: BackendAPI): Promise<void> {
     await api.panes.resize('pane', { ratio: 0.3, delta: 0.2 });
     // @ts-expect-error Status is an explicit public vocabulary.
     await api.agents.setStatus('pane', 'busy');
+    // #387: one typed event per agent hook; the unsubscribe is a plain Dispose.
+    const offAgentEvents: () => void = api.agents.onEvent(async (event, raw) => {
+        if (event.type === 'notification' && event.notificationType === 'permission_prompt' && event.muted !== true) void event.paneID;
+        const reply: string | undefined = event.lastAssistantMessage;
+        void reply; void raw.sequence;
+        // @ts-expect-error The verb is a fixed vocabulary.
+        if (event.type === 'permission') return;
+    });
+    offAgentEvents();
     // @ts-expect-error Browser-only focus is not a backend operation.
     await api.ui.focusPane('workspace', 'pane');
+    // #390: read the screen, then type only if it has not changed since.
+    const screen = await api.terminal.read('pane', { lines: 20, settleMs: 300 });
+    const revision: number = screen.revision;
+    const settled: boolean | undefined = screen.settled;
+    if (!screen.altScreen && screen.cursor.row >= 0 && settled !== false) await api.terminal.send('pane', 'y', { bare: true, ifRevision: revision });
+    const guarded: number | undefined = (await api.terminal.sendKey('pane', 'enter', { ifRevision: revision })).revision;
+    void guarded;
+    // @ts-expect-error The guard is a revision number.
+    await api.terminal.sendKey('pane', 'enter', { ifRevision: String(revision) });
     api.hooks.register('sample.plugin.guard', async invocation => invocation.phase === 'before' ? { allow: true } : undefined);
+    // #391: a `contributes.cli` command reads its argv and returns text, JSON and an exit code.
+    api.commands.register('sample.plugin.hello', (args): CliResult => {
+        const { argv, json } = args as CliInvocation;
+        return json ? { json: { argv } } : { text: `hello ${argv.join(' ')}`, exitCode: argv.length ? 0 : 2 };
+    });
+    // @ts-expect-error A CLI exit code is a number.
+    const badExit: CliResult = { exitCode: '1' };
     api.providers.register('sample.plugin.files', { read: async args => String(args.path) });
     await api.services.call<{ answer: number }>('sample.plugin.catalog', 1, 'read');
     const branch = await api.services.call('kelpi.git', 1, 'getCurrentBranch', { repoPath: '/repo' });

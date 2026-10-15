@@ -137,6 +137,7 @@ describe('double-click and drag selects whole words (vendor 0.4.0-kelpi.19)', ()
             f.fire('mousedown', at(6, 2), { detail: 1, buttons: 1 });
             f.drag(17, 2);
             f.fire('mouseup', at(17, 2), { detail: 1 });
+            // From the middle of `i` to the middle of `o`, both included again (#404, -kelpi.23).
             expect(f.term.getSelection()).toBe('ick brown fo');
         } finally { f.dispose(); }
     });

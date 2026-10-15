@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { type JsonObject } from '@kelpi/protocol';
-import { createKelpiAPI, KelpiError, type Context } from '../index.js';
+import { createKelpiAPI, KelpiError, type BackendAPI, type Context, type HostCall } from '../index.js';
 import { harness as appHarness } from '../../daemon/src/handlers/app/testing.js';
 import { harness as paneHarness, W1, W2, testID } from '../../daemon/src/handlers/pane/testing.js';
 import { paneHandlers } from '../../daemon/src/handlers/pane/index.js';
@@ -60,6 +60,70 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(app.state().groups[0]?.isCollapsed).toBe(true);
         expect(await api.workspaces.remove(created.workspaceID)).toMatchObject({ workspaceID: created.workspaceID, workspaceName: 'Board' });
         expect(await api.workspaces.list()).toHaveLength(1);
+    });
+    it('nests workspaces one level deep, lists, collapses and cascades them (app-state-core §2.9)', async () => {
+        const { api, app, sent } = host();
+        const parent = await api.workspaces.create({ name: 'Orchestrator' });
+        const worker = await api.workspaces.create({ name: 'Worker', parentID: parent.workspaceID });
+        expect(worker).toMatchObject({ parentID: parent.workspaceID, parentName: 'Orchestrator' });
+        expect(sent.at(-1)).toMatchObject({ command: 'workspace-create', parent: parent.workspaceID });
+        const listed = await api.workspaces.list({ parentID: parent.workspaceID });
+        expect(listed.map(workspace => workspace.id)).toEqual([worker.workspaceID]);
+        expect(listed[0]).toMatchObject({ parentID: parent.workspaceID, parentName: 'Orchestrator' });
+
+        expect(await api.workspaces.nest(W1, parent.workspaceID, { index: 0 })).toMatchObject({
+            workspaceID: W1, parentID: parent.workspaceID, index: 0
+        });
+        await expect(api.workspaces.nest(parent.workspaceID, W1)).rejects.toThrow('nest one level deep');
+        expect(await api.workspaces.setChildrenCollapsed(parent.workspaceID, true)).toMatchObject({ collapsed: true });
+        expect(app.state().workspaces.find(workspace => workspace.id === parent.workspaceID)?.childrenCollapsed).toBe(true);
+
+        // The last-workspace guard counts the nested workspaces a cascade takes with it.
+        await expect(api.workspaces.remove(parent.workspaceID, { cascade: true })).rejects.toThrow('last workspace');
+        const survivor = await api.workspaces.create({ name: 'Survivor' });
+        const removed = await api.workspaces.remove(parent.workspaceID, { cascade: true });
+        expect(removed.deletedChildren).toEqual([W1, worker.workspaceID]);
+        expect((await api.workspaces.list()).map(workspace => workspace.id)).toEqual([survivor.workspaceID]);
+    });
+    it('refuses an empty parentID before sending, and lists nested workspaces in their group (§2.9)', async () => {
+        const { api, sent } = host();
+        const before = sent.length;
+        for (const parentID of ['', '   ']) {
+            await expect(api.workspaces.create({ name: 'Stray', parentID })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+            await expect(api.workspaces.list({ parentID })).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+            await expect(api.workspaces.nest(W1, parentID)).rejects.toMatchObject({ code: 'INVALID_ARGUMENT' });
+        }
+        expect(sent.length).toBe(before);
+
+        const lead = await api.workspaces.create({ name: 'Lead' });
+        const group = await api.groups.create('Squad', { workspaceIDs: [lead.workspaceID] });
+        const worker = await api.workspaces.create({ name: 'Worker', parentID: lead.workspaceID });
+        const listed = (await api.groups.list()).find(entry => entry.id === group.groupID);
+        expect(listed?.workspaces).toEqual([
+            { id: lead.workspaceID, name: 'Lead' },
+            { id: worker.workspaceID, name: 'Worker', parentID: lead.workspaceID, parentName: 'Lead' }
+        ]);
+    });
+    it('rejects a parentID list or create that a daemon predating nesting ignored (§2.9)', async () => {
+        // An older daemon: it drops `parent`, lists everything and creates at the top level.
+        const older = createKelpiAPI(async (_method, args) => {
+            const payload = (args as { payload: JsonObject }).payload;
+            if (payload['command'] === 'workspace-list') return { ok: true, workspaces: [{ id: 'A', name: 'a' }, { id: 'B', name: 'b' }] };
+            return { ok: true, workspace_id: 'NEW', workspace_name: 'Worker', muted: false };
+        });
+        await expect(older.workspaces.list({ parentID: 'boss' })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+        await expect(older.workspaces.list()).resolves.toHaveLength(2);
+        await expect(older.workspaces.create({ name: 'Worker', parentID: 'boss' })).rejects.toMatchObject({
+            code: 'UNSUPPORTED', details: { workspaceID: 'NEW' }
+        });
+        // A parent deleted while a worktree create ran: created at the top level, and said so.
+        const lost = createKelpiAPI(async () => ({
+            ok: true, workspace_id: 'NEW', workspace_name: 'Worker', muted: false,
+            parent_lost: true, parent_lost_reason: "parent 'boss' was deleted while the workspace was being created"
+        }));
+        await expect(lost.workspaces.create({ name: 'Worker', parentID: 'boss', worktree: 'w' })).rejects.toMatchObject({
+            code: 'PARENT_LOST', message: expect.stringContaining("parent 'boss' was deleted")
+        });
     });
     it('leaves update_main unsaid unless asked, so a group’s worktree switch can decide it (app-state-core §5.5)', async () => {
         const { api, sent } = host();
@@ -134,6 +198,28 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(await api.terminal.capture(P1, { scrollback: true, lines: 1 })).toBe('visible');
         expect((await api.terminal.sync(W1, 'on')).active).toBe(true);
         expect((await api.terminal.excludeFromSync(P1, true)).excluded).toEqual([{ id: P1 }]);
+    });
+    it('reads a terminal with its revision and refuses a guarded send once the screen moves on (#390)', async () => {
+        const { api, pane } = host();
+        pane.term.viewport.set(P1, 'prompt> ');
+        pane.term.cursors.set(P1, { alternate: false, row: 0, col: 8 });
+        const screen = await api.terminal.read(P1);
+        expect(screen).toStrictEqual({ text: 'prompt> ', revision: expect.any(Number), cursor: { row: 0, col: 8 }, altScreen: false });
+        expect(screen).not.toHaveProperty('settled');
+
+        pane.term.feed(P1, new TextEncoder().encode('Overwrite? [y/N] '));
+        const failure = await api.terminal.send(P1, 'y', { ifRevision: screen.revision }).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(KelpiError);
+        expect(failure).toMatchObject({ code: 'SCREEN_CHANGED', details: { revision: screen.revision + 1 } });
+        expect(pane.input.texts).toEqual([]);
+
+        const fresh = await api.terminal.read(P1);
+        expect(fresh.text).toBe('prompt> Overwrite? [y/N] ');
+        expect(await api.terminal.sendKey(P1, 'enter', { ifRevision: fresh.revision })).toMatchObject({ key: 'enter', revision: fresh.revision });
+        expect(pane.input.keys).toEqual([{ paneID: P1, key: 'enter' }]);
+
+        expect(await api.terminal.read(P1, { settleMs: 20 })).toMatchObject({ revision: fresh.revision, settled: true });
+        expect(pane.term.settles).toEqual([{ paneID: P1, quietMs: 20 }]);
     });
     it('uses lazy pane/workspace context instead of the daemon active workspace, with explicit options winning', async () => {
         let context: Partial<Context> = { workspaceID: W1, paneID: P1 };
@@ -322,5 +408,51 @@ describe('public SDK over Kelpi command handlers', () => {
         expect(transport).toHaveBeenLastCalledWith('services.call', { service: 'sample.host.catalog', version: 2, method: 'read', args: { custom_arg: true }, provider: 'sample.host.local' });
         await api.services.select('kelpi.files', 1, null);
         expect(transport).toHaveBeenLastCalledWith('services.select', { service: 'kelpi.files', version: 1, providerID: null });
+    });
+    // #389: a backend prompt is one daemon call carrying the view's options and, only when
+    // named, the target window; the daemon's `NO_WINDOW: ` refusal becomes a KelpiError code.
+    it('sends backend prompts as { options, windowID? } and maps NO_WINDOW', async () => {
+        // The shared base carries the backend methods; a view replaces them (browser.test.ts).
+        const backend = (transport: HostCall) => createKelpiAPI(transport) as unknown as BackendAPI;
+        const transport = vi.fn(async (method: string, _args: JsonObject): Promise<unknown> => method === 'ui.showInput' ? null : 'run');
+        const api = backend(transport);
+        const dialog = { title: 'Run it?', message: 'Run the command?', actions: [{ id: 'run', label: 'Run', kind: 'primary' as const }] };
+        expect(await api.ui.showDialog(dialog)).toBe('run');
+        expect(transport).toHaveBeenLastCalledWith('ui.showDialog', { options: dialog });
+        await api.ui.showQuickPick({ title: 'Pick', items: [{ id: 'run', label: 'Run' }] }, { windowID: 'W' });
+        expect(transport).toHaveBeenLastCalledWith('ui.showQuickPick', { options: { title: 'Pick', items: [{ id: 'run', label: 'Run' }] }, windowID: 'W' });
+        expect(await api.ui.showInput({ title: 'Name' }, { windowID: '' })).toBeNull();
+        expect(transport).toHaveBeenLastCalledWith('ui.showInput', { options: { title: 'Name' } });
+        await api.ui.showNotification({ message: 'Done' }, {});
+        expect(transport).toHaveBeenLastCalledWith('ui.showNotification', { options: { message: 'Done' } });
+        const refused = backend(async () => { throw new Error('NO_WINDOW: the command has no window'); });
+        const failure = await refused.ui.showDialog(dialog).catch(error => error);
+        expect(failure).toBeInstanceOf(KelpiError);
+        expect(failure).toMatchObject({ code: 'NO_WINDOW', method: 'ui.showDialog', message: 'NO_WINDOW: the command has no window' });
+        const other = backend(async () => { throw new Error('too many pending prompts for this plugin'); });
+        await expect(other.ui.showNotification({ message: 'Done' })).rejects.toMatchObject({ code: 'TRANSPORT_ERROR', method: 'ui.showNotification', message: 'too many pending prompts for this plugin' });
+    });
+});
+
+describe('agents.onEvent (#387)', () => {
+    it('subscribes to agent.event, hands over the payload, and ignores plugin-emitted look-alikes', async () => {
+        const listeners = new Map<string, (event: { name: string; data: unknown; pluginID?: string }) => unknown>();
+        const dispose = vi.fn();
+        const on = vi.fn((name: string, listener: (event: never) => unknown) => { listeners.set(name, listener as never); return dispose; });
+        const api = createKelpiAPI(async () => null, () => ({}), on as never);
+        const received: unknown[] = [];
+        const off = api.agents.onEvent(event => { received.push(event); });
+        expect(on).toHaveBeenCalledWith('agent.event', expect.any(Function));
+        const data = { type: 'stop', paneID: 'P', workspaceID: 'W', agent: 'claude', status: 'waitingForInput', lastAssistantMessage: 'done' };
+        await listeners.get('agent.event')?.({ name: 'agent.event', data });
+        // A plugin whose ID is `agent` emitting `event` produces the same name, with its pluginID.
+        await listeners.get('agent.event')?.({ name: 'agent.event', data: { type: 'stop' }, pluginID: 'agent' });
+        expect(received).toEqual([data]);
+        off();
+        expect(dispose).toHaveBeenCalledTimes(1);
+    });
+    it('refuses without an event source', () => {
+        const api = createKelpiAPI(async () => null);
+        expect(() => api.agents.onEvent(() => {})).toThrow(expect.objectContaining({ code: 'EVENTS_UNAVAILABLE' }));
     });
 });

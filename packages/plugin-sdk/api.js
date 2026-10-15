@@ -17,6 +17,8 @@ export class KelpiError extends Error {
 const clean = value => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 /** Daemon error prefixes (`CODE: message`) that become a KelpiError `code` on documents calls. */
 const documentErrorCodes = ['DOCUMENT_CONFLICT', 'CSV_STALE', 'CSV_GONE', 'CSV_READ_ONLY', 'CSV_BUSY', 'CSV_INVALID'];
+/** Reply `code`s that become a KelpiError `code` on typed command helpers; every other refusal is COMMAND_FAILED. */
+const commandErrorCodes = ['SCREEN_CHANGED'];
 // Built-in command DTOs use snake_case; the public facade uses the same camelCase/ID
 // convention as context and snapshots. Never apply this to arbitrary plugin data/settings.
 const camelKey = key => key.replace(/_([a-z]+)(?=_|$)/g, (_, word) =>
@@ -26,8 +28,11 @@ const camel = value => Array.isArray(value) ? value.map(camel) : value !== null 
 const target = value => typeof value === 'string' ? { target: value }
     : clean({ target: value?.paneID, workspace: value?.workspaceID });
 
-/** Create the platform-independent portion of the public API over a JSON transport. */
-export function createKelpiAPI(transport, getContext = () => ({})) {
+/**
+ * Create the platform-independent portion of the public API over a JSON transport. `on` is the
+ * platform's `events.on`; without it, `agents.onEvent` throws EVENTS_UNAVAILABLE.
+ */
+export function createKelpiAPI(transport, getContext = () => ({}), on = undefined) {
     const call = async (method, args = {}) => {
         try { return await transport(method, args); }
         catch (error) {
@@ -43,8 +48,9 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         if (!reply || typeof reply !== 'object' || typeof reply.ok !== 'boolean') {
             throw new KelpiError(`Invalid reply to ${name}`, { code: 'INVALID_REPLY', method: name, details: reply });
         }
+        // Only an allowlisted refusal (`SCREEN_CHANGED`) keeps its code; `PLUGIN_VETO` and the rest stay COMMAND_FAILED.
         if (!reply.ok) throw new KelpiError(reply.error ?? `${name} failed`, {
-            code: 'COMMAND_FAILED', method: name, details: reply,
+            code: commandErrorCodes.includes(reply.code) ? reply.code : 'COMMAND_FAILED', method: name, details: reply,
         });
         return reply;
     };
@@ -56,6 +62,43 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         return result[field];
     };
     const settings = async (name, fields) => (await execute(name, fields)).settings;
+    // Nested workspaces (app-state-core.md §2.9). An empty parent is refused before anything is
+    // sent: read as "no parent" it would create a top-level workspace or list every workspace.
+    const parentArgument = (parentID, method) => {
+        if (parentID === undefined) return undefined;
+        if (typeof parentID !== 'string' || parentID.trim() === '') {
+            throw new KelpiError(`${method} parentID must name a workspace`, { code: 'INVALID_ARGUMENT', method });
+        }
+        return parentID;
+    };
+    const listWorkspaces = async (options) => {
+        const parent = parentArgument(options.parentID, 'workspace-list');
+        const result = await run('workspace-list', clean({ group: options.groupID, parent }));
+        if (!Array.isArray(result.workspaces)) throw new KelpiError('Invalid workspaces reply to workspace-list', { code: 'INVALID_REPLY', method: 'workspace-list', details: result });
+        // A daemon that predates nesting ignores `parent` and lists EVERYTHING; the filtered
+        // reply echoes the parent it resolved, so a missing echo is never taken for a filter.
+        if (parent !== undefined && result.parentID === undefined) {
+            throw new KelpiError('workspace-list ignored parentID: the daemon predates nested workspaces', { code: 'UNSUPPORTED', method: 'workspace-list', details: result });
+        }
+        return result.workspaces;
+    };
+    const createWorkspace = async (options) => {
+        const parent = parentArgument(options.parentID, 'workspace-create');
+        const result = await run('workspace-create', clean({
+            name: options.name, path: options.path, color: options.color, group: options.groupID,
+            profile: options.profile, worktree: options.worktree, branch: options.branch,
+            update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
+            parent,
+        }));
+        // The workspace exists either way; `details` carries it so the caller can move or remove it.
+        if (parent !== undefined && result.parentLost === true) {
+            throw new KelpiError(`${result.parentLostReason ?? 'the parent changed while the workspace was being created'}; it was created at the top level`, { code: 'PARENT_LOST', method: 'workspace-create', details: result });
+        }
+        if (parent !== undefined && result.parentID === undefined) {
+            throw new KelpiError('workspace-create ignored parentID: the daemon predates nested workspaces; it was created at the top level', { code: 'UNSUPPORTED', method: 'workspace-create', details: result });
+        }
+        return result;
+    };
     const unavailableContext = method => new KelpiError(`${method} requires a paneID or workspaceID outside a Kelpi view or scoped command`, { code: 'CONTEXT_UNAVAILABLE', method });
     const creationTarget = options => {
         if (options.paneID !== undefined || options.workspaceID !== undefined) return target(options);
@@ -90,6 +133,21 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         if (context.paneID) return { pane_id: context.paneID };
         if (context.workspaceID) return { workspace: context.workspaceID };
         throw unavailableContext(method);
+    };
+    // #390: a guard that is not a revision would cross IPC as null and send unguarded, and a daemon
+    // that ignores `if_revision` has already typed by the time it acks without `revision`.
+    const guardedSend = async (name, label, what, fields, ifRevision) => {
+        if (ifRevision === undefined) return run(name, fields);
+        if (!Number.isSafeInteger(ifRevision) || ifRevision < 0) {
+            const got = typeof ifRevision === 'string' ? JSON.stringify(ifRevision) : String(ifRevision);
+            throw new KelpiError(`ifRevision must be a non-negative integer (got ${got})`, { code: 'INVALID_ARGUMENT', method: name });
+        }
+        const reply = await execute(name, { ...fields, if_revision: ifRevision });
+        if (typeof reply.revision !== 'number') {
+            throw new KelpiError(`${label}: this Kelpi did not check ifRevision, so ${what} was sent unguarded (#390)`, { code: 'UNSUPPORTED', method: name, details: reply });
+        }
+        const { ok, ...result } = reply;
+        return camel(result);
     };
     const panes = Object.freeze({
         list: async (options = {}) => list('pane-list', 'panes', paneListScope(options)),
@@ -129,6 +187,15 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
         setHeaderRow: (paneID, on) => documentCall('csv-header-row', { paneID, on }),
         discard: paneID => documentCall('csv-discard', { paneID }),
     });
+    // Backend prompts (#389): one daemon call each, sent to the invocation window unless
+    // `{ windowID }` names one. A view replaces these with its own window path (browser.js).
+    const prompt = async (method, options, to) => {
+        try { return await call(method, { options, ...(typeof to?.windowID === 'string' && to.windowID ? { windowID: to.windowID } : {}) }); }
+        catch (error) {
+            if (!error.message?.startsWith('NO_WINDOW: ')) throw error;
+            throw new KelpiError(error.message, { code: 'NO_WINDOW', method, cause: error });
+        }
+    };
     // Browser operations share native replies, but never rename page-owned data.
     // Attributes can contain underscores, and exec() may return any JSON object.
     const browserDTO = value => Array.isArray(value) ? value.map(browserDTO) : value !== null && typeof value === 'object'
@@ -166,7 +233,13 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             reveal: (path, options = {}) => done('reveal-path', { path, select: options.select ?? false }),
         }),
         process: Object.freeze({ exec: (file, args = [], options = {}) => call('process.exec', clean({ file, args, ...options })) }),
-        ui: Object.freeze({ reveal: async paneID => { await call('ui.reveal', { paneID }); } }),
+        ui: Object.freeze({
+            reveal: async paneID => { await call('ui.reveal', { paneID }); },
+            showDialog: (options, to) => prompt('ui.showDialog', options, to),
+            showQuickPick: (options, to) => prompt('ui.showQuickPick', options, to),
+            showInput: (options, to) => prompt('ui.showInput', options, to),
+            showNotification: (options, to) => prompt('ui.showNotification', options, to),
+        }),
         panes,
         documents: Object.freeze({
             get: (paneID = getContext().paneID) => documentCall('get', { paneID }),
@@ -229,18 +302,20 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             }),
         }),
         workspaces: Object.freeze({
-            list: (options = {}) => list('workspace-list', 'workspaces', { group: options.groupID }),
+            list: (options = {}) => listWorkspaces(options),
             // `update_main` is sent only when asked: absent lets a group whose worktree switch is on
             // make update main the default, as it does for the CLI (app-state-core.md §5.5).
-            create: (options = {}) => run('workspace-create', clean({
-                name: options.name, path: options.path, color: options.color, group: options.groupID,
-                profile: options.profile, worktree: options.worktree, branch: options.branch,
-                update_main: options.updateMain, repo: options.repo, muted: options.muted, icon: options.icon,
-            })),
+            create: (options = {}) => createWorkspace(options),
             rename: (workspaceID, name) => run('rename-workspace', { workspace_id: workspaceID, name }),
-            remove: (workspaceID, options = {}) => run('workspace-delete', { name: workspaceID, force: options.force ?? false }),
+            remove: (workspaceID, options = {}) => run('workspace-delete', { name: workspaceID, force: options.force ?? false, cascade: options.cascade ?? false }),
             move: (workspaceID, options = {}) => done('workspace-move', { name: workspaceID, group: options.groupID, index: options.index }),
             moveMany: (workspaceIDs, options = {}) => run('move-workspaces', { workspace_ids: workspaceIDs, group_id: options.groupID ?? null, index: options.index }),
+            // Nested workspaces (app-state-core.md §2.9): one level deep, refused with a reason otherwise.
+            nest: async (workspaceID, parentID, options = {}) => {
+                if (parentID === undefined) throw new KelpiError('workspace-nest parentID must name a workspace', { code: 'INVALID_ARGUMENT', method: 'workspace-nest' });
+                return run('workspace-nest', clean({ name: workspaceID, parent: parentArgument(parentID, 'workspace-nest'), index: options.index }));
+            },
+            setChildrenCollapsed: (workspaceID, collapsed) => run('set-workspace-children-collapsed', { workspace_id: workspaceID, collapsed }),
             setProfile: (workspaceID, profile) => done('workspace-profile', { name: workspaceID, profile: profile ?? '' }),
             setMuted: (workspaceID, muted) => run('workspace-mute', { name: workspaceID, muted }),
             labels: (workspaceID, operation, values = []) => run('workspace-label', { name: workspaceID, label_op: operation, label_values: values }),
@@ -275,12 +350,28 @@ export function createKelpiAPI(transport, getContext = () => ({})) {
             notify: (paneID, title, body, options = {}) => done('notification', { pane_id: paneID, title, body, background_tasks: options.backgroundTasks ?? 0 }),
             sessionStart: (paneID, sessionID, agent, options = {}) => done('session-start', { pane_id: paneID, session_id: sessionID, agent, profile: options.profile }),
             sessionEnd: (paneID, sessionID) => done('session-end', { pane_id: paneID, session_id: sessionID }),
+            // #387: one `agent.event` per agent hook. Kelpi's own carry no pluginID, and a
+            // plugin's `events.emit` always does, so a plugin whose ID is `agent` cannot pass for one.
+            onEvent: listener => {
+                if (on === undefined) throw new KelpiError('agents.onEvent needs an event source', { code: 'EVENTS_UNAVAILABLE', method: 'agents.onEvent' });
+                return on('agent.event', event => event.pluginID === undefined ? listener(event.data, event) : undefined);
+            },
         }),
         terminal: Object.freeze({
             watch: paneID => call('terminal.watch', { paneID }),
             unwatch: async subscription => { await call('terminal.unwatch', { subscription }); },
-            send: (pane, text, options = {}) => run('pane-send', { ...target(pane), text, bare: options.bare ?? false }),
-            sendKey: (pane, key) => run('pane-send-key', { ...target(pane), key }),
+            send: (pane, text, options = {}) => guardedSend('pane-send', 'terminal.send', 'the text', { ...target(pane), text, bare: options.bare ?? false }, options.ifRevision),
+            sendKey: (pane, key, options = {}) => guardedSend('pane-send-key', 'terminal.sendKey', 'the key', { ...target(pane), key }, options.ifRevision),
+            // #390: the screen with its revision, cursor and alt-screen flag; `settled` only with `settleMs`.
+            read: async (pane, options = {}) => {
+                const reply = await execute('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false, settle_ms: options.settleMs });
+                const { text, revision, cursor, altScreen, settled } = camel(reply);
+                // A daemon from before #390 omits these; an `ifRevision: undefined` would then send unguarded.
+                if (typeof revision !== 'number' || typeof cursor?.row !== 'number' || typeof cursor?.col !== 'number' || typeof altScreen !== 'boolean') {
+                    throw new KelpiError('terminal.read needs a Kelpi daemon that reports screen revisions (#390)', { code: 'UNSUPPORTED', method: 'pane-capture', details: reply });
+                }
+                return clean({ text, revision, cursor, altScreen, settled });
+            },
             capture: async (pane, options = {}) => (await run('pane-capture', { ...target(pane), lines: options.lines, scrollback: options.scrollback ?? false })).text,
             sync: (workspaceID, action = 'status') => run('pane-sync', { workspace: workspaceID, action }),
             excludeFromSync: (pane, excluded) => run('pane-sync-exclude', { ...target(pane), excluded }),

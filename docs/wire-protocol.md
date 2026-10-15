@@ -14,9 +14,29 @@ quirk is documented as-is and explained in "Compatibility rationale" at the end.
 
 ## Plugin envelope and protocol generation
 
-The current control/discovery and WebSocket generation is **2**. Plugin operations use a
-known `plugin` command; plugin-defined command/service names are nested data, not new
-top-level wire verbs:
+The current control/discovery (process) generation is **2**, and the WebSocket (client-sync)
+generation is **3**. They were one number until generation 3, which moved the WebSocket one alone:
+
+- **Process generation** (`PROTOCOL_VERSION`, `packages/protocol/src/index.ts`): what `ping`
+  and `/healthz` report as `protocol`, and what names the run-dir files (`daemon-v2.sock`,
+  `.token`, `.pid`). Moving it makes an updated app start a second daemon beside the running
+  one instead of handing it off, so only a change to the control socket or the run dir moves it.
+- **WebSocket generation** (`WS_PROTOCOL_VERSION`, `packages/protocol/src/ws/messages.ts`): what a
+  client's `hello` must match exactly. A mismatch is refused with `protocol-mismatch` ("daemon
+  speaks client protocol v3, client speaks v2; update Kelpi so the app and the daemon run the
+  same version"), and the client stops retrying and shows that sentence.
+  - 2: plugin pane records.
+  - 3: nested workspaces (app-state-core.md §2.9): `childOrder` and `childrenCollapsed` on every
+    workspace, and the `nest-workspaces` / `set-workspace-children-collapsed` verbs. A nested
+    workspace lives only in its parent's `childOrder`, so a generation 2 client would have no
+    row for it; it is refused instead.
+
+The socket wire (this document) is unversioned: new fields and verbs are additive, and the CLI
+detects a daemon that predates one from its reply (for nesting, the missing `parent_id` echo
+on `workspace-create` and `workspace-list`).
+
+Plugin operations use a known `plugin` command; plugin-defined command/service names are
+nested data, not new top-level wire verbs:
 
 ```json
 {"command":"plugin","action":"list","text":"{}"}
@@ -27,6 +47,8 @@ The `text` field contains an encoded JSON object. One-shot operations return
 starts with `{ok, epoch, sequence, state}` and then sends `{ok, event}` lines; disconnect
 releases its subscription. The CLI prints one-shot `result` values and retains the watch
 envelopes unchanged.
+A plugin's own `kelpi <verb>` uses the `cli-list` and `cli` actions of this envelope
+([CLI verbs](plugins.md#cli-verbs)); it adds no wire verb.
 
 `plugin init`, `validate` and `pack` run locally without a daemon request. `plugin dev`
 validates local snapshots and uses identity-guarded `dev-install` requests. Installation
@@ -179,10 +201,16 @@ names are listed per command below). Rules:
   (`packages/protocol/src/wire/fields.ts:143`, `:168-171`), so `{"bare":null}` decodes
   with `bare` defaulting to `false`.
 - `since` is an unsigned 64-bit integer; a negative value fails the decode.
+- `tool_input` (`permission-request`, #388) is the one **object** field: it must be a plain
+  JSON object, and an array, a string or any other JSON type fails the decode like any other
+  wrong-typed known key.
 - Many optional string fields are normalized: **empty string → treated as absent**
   (documented per command; applies to `target`, `workspace`, `group`, `profile`,
   `worktree`, `branch`, `repo`, `scope`, `level`, `send_to`, `domain`, `selector` (for
-  `web-key`), `url_match`, `for`, `mode`, `block`, `behavior`, `target_path`).
+  `web-key`), `url_match`, `for`, `mode`, `block`, `behavior`, `target_path`). Not `parent` or
+  `parent_pane_id` (app-state-core.md §2.9): an empty one is an unset variable far more often
+  than a choice, and "no parent" would create a top-level workspace or list every workspace, so
+  the handlers refuse it (`parent must name a workspace (got an empty value)`).
 - `pane_id` must be a syntactically valid UUID string; an invalid UUID makes
   `pane_id` behave as absent (for commands where it's optional) or drops the message (for
   commands where it's required). UUID parsing is `normalizeUuid`
@@ -314,11 +342,12 @@ plugin, workspace-list, group-list,
 pane-list, pane-close, pane-capture, pane-send, pane-send-key,
 pane-split, pane-create, pane-name, pane-resize, pane-font-size, pane-clear,
 pane-move-adjacent, pane-sync, pane-sync-exclude,
-workspace-create, workspace-delete, workspace-label, workspace-mute, workspace-rename,
+workspace-create, workspace-delete, workspace-nest, workspace-label, workspace-mute, workspace-rename,
 workspace-icon,
 group-set-repo, group-reorder, group-sort,
 graft-start, graft-stop, graft-status,
 ping, restart-old-terminals,
+permission-request,
 web-open, web-navigate, web-url, web-back, web-forward, web-reload, web-capture,
 web-tabs, web-tab-new, web-tab-close, web-tab-select,
 web-console, web-inspect, web-inspect-result,
@@ -472,12 +501,13 @@ carry `"command"`.
 | `notification` | F&F | `pane_id` | `title`, `body`, `background_tasks`, `session_id`†, `agent`†, `profile`† |
 | `session-start` | F&F | `pane_id`, `session_id` | `agent`, `profile` |
 | `session-end` | F&F | `pane_id`, `session_id` | — |
+| `permission-request` | R/R | `pane_id`, `tool_name` (non-empty) | `tool_input`, `mcp_server`, `cwd`, `permission_mode`, `session_id`†, `agent`†, `profile`† |
 | `pane-split` | R/R | one of `pane_id`/`target`/`workspace` | `direction`, `path`, `name` |
 | `pane-create` | R/R | one of `pane_id`/`target`/`workspace` | `path`, `name` |
 | `pane-close` | R/R | one of `pane_id`/`target` | `workspace` |
 | `pane-name` | R/R | one of `pane_id`/`target`; `name` | `workspace` |
-| `pane-send` | R/R | `target`, `text` (non-empty) | `pane_id`, `workspace`, `bare` |
-| `pane-send-key` | R/R | `target`, `key` | `pane_id`, `workspace` |
+| `pane-send` | R/R | `target`, `text` (non-empty) | `pane_id`, `workspace`, `bare`, `if_revision` |
+| `pane-send-key` | R/R | `target`, `key` | `pane_id`, `workspace`, `if_revision` |
 | `pane-resize` | R/R | one of `pane_id`/`target`; exactly one of `ratio`/`delta` | `workspace` |
 | `pane-font-size` | R/R | one of `pane_id`/`target`; exactly one of `size`/`reset` | `workspace` |
 | `pane-clear` | R/R | one of `pane_id`/`target` | `workspace` |
@@ -485,13 +515,14 @@ carry `"command"`.
 | `pane-move-adjacent` | R/R | `target`, `anchor`, `zone` | `pane_id`, `workspace` |
 | `pane-move-to-workspace` | F&F | `pane_id`, `name` | `text` (`"true"` = create) |
 | `pane-list` | R/R | — | `pane_id`, `workspace`, `scope` |
-| `pane-capture` | R/R | one of `pane_id`/`target` | `workspace`, `lines`, `scrollback` |
+| `pane-capture` | R/R | one of `pane_id`/`target` | `workspace`, `lines`, `scrollback`, `settle_ms` |
 | `pane-sync` | R/R | `action` | `pane_id`, `workspace` |
 | `pane-sync-exclude` | R/R | `target`, `excluded` | `pane_id`, `workspace` |
-| `workspace-list` | R/R | — | `group` |
-| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults` |
+| `workspace-list` | R/R | — | `group`, `parent` |
+| `workspace-create` | R/R | — | `name`, `path`, `color`, `group`, `profile`, `worktree`, `branch`, `update_main`, `repo`, `muted`, `icon`, `group_defaults`, `parent`, `parent_pane_id` |
 | `workspace-move` | F&F | `name` | `group`, `index` |
-| `workspace-delete` | R/R | `name` | `force`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
+| `workspace-nest` | R/R | `name`, `parent` | `index` |
+| `workspace-delete` | R/R | `name` | `force`, `cascade`, `worktree_paths`, `force_worktree_paths`, `prune_worktrees`, `delete_branches`, `batch_ids` |
 | `workspace-profile` | F&F | `name` | `profile` |
 | `workspace-label` | R/R | `name`, `label_op` | `label_values` |
 | `workspace-mute` | R/R | `name` | `muted` |
@@ -578,6 +609,15 @@ dock bounce.
 {"command":"stop","pane_id":"1B4E…","background_tasks":2,"session_id":"abc-123"}
 ```
 
+Optional on `stop` (#387): `last_assistant_message` (string, the text of the agent's final
+reply, capped by the CLI at 64 KiB of UTF-8 cut on a code point boundary),
+`last_assistant_message_truncated` (bool, sent only as `true` when the CLI cut the text;
+ignored without a message) and `transcript_path` (string). Empty strings read as absent.
+
+```json
+{"command":"stop","pane_id":"1B4E…","session_id":"abc-123","last_assistant_message":"Done.","transcript_path":"/Users/me/.claude/projects/-work-app/abc-123.jsonl"}
+```
+
 **`error`** — agent error. `message` defaults to `"Unknown error"`.
 
 ```json
@@ -591,6 +631,16 @@ dock bounce.
 {"command":"notification","pane_id":"1B4E…","title":"Claude","body":"Needs approval","background_tasks":1}
 ```
 
+Optional on `notification` (#387): `notification_type` (string, Claude's
+`permission_prompt`, `idle_prompt`, `elicitation_dialog`, …), `transcript_path` (string) and
+`tool_name` (string, the tool a Codex PermissionRequest asks about; sent only with
+`agent:"codex"`). Empty strings read as absent.
+
+```json
+{"command":"notification","pane_id":"1B4E…","title":"Claude Code","body":"Claude needs your permission to use Bash","notification_type":"permission_prompt","transcript_path":"/Users/me/.claude/projects/-work-app/abc-123.jsonl"}
+{"command":"notification","pane_id":"1B4E…","title":"Codex","body":"Approval requested: Bash","agent":"codex","tool_name":"Bash"}
+```
+
 **`session-start`** — bind an agent session id to the pane. `session_id` required
 non-empty; `agent` optional (§5.1); `profile` optional (the CLI's effective
 `KELPI_PROFILE`, empty treated as absent — recorded so a resume can rebuild the
@@ -601,12 +651,83 @@ value).
 {"command":"session-start","pane_id":"1B4E…","session_id":"3f2a…","agent":"claude","profile":"work"}
 ```
 
+Optional on `session-start` (#387): `transcript_path` (string, empty treated as absent).
+
+The #387 hook fields are forwarded by `kelpi event` only when the hook's stdin carries them
+(agent-lifecycle.md §3). `notification_type` and `last_assistant_message` are Claude-only:
+they come from Claude Code's documented hook payloads, and a Codex payload is forwarded the
+same way only if it carries the same keys. `transcript_path` is common to both agents'
+payloads; `tool_name` is forwarded only from Codex.
+
 **`session-end`** — the session ended; the app clears the pane's tracked session id
 (and the profile recorded beside it, agent-lifecycle.md §5.6) **only if it still
 matches** `session_id` (required non-empty). Never dual-fires.
 
 ```json
 {"command":"session-end","pane_id":"1B4E…","session_id":"3f2a…"}
+```
+
+---
+
+### 6.1.1 `permission-request` (R/R)
+
+Sent by `kelpi event permission-request` from Claude Code's `PermissionRequest` hook (#388).
+It is the one agent hook verb that gets a reply: the daemon asks the selected
+`kelpi.agent.permissions` provider ([plugin-services.md](plugin-services.md)) for a decision
+and answers with it, so the CLI can print Claude's decision JSON. Because the verb is
+allowlisted, a missing or invalid `pane_id` is answered with `{"ok":false,…}` rather than
+dropped.
+
+| field | type | req/opt | notes |
+|---|---|---|---|
+| `pane_id` | string (UUID) | req | `KELPI_PANE_ID` |
+| `tool_name` | string | req | non-empty; without it the line is rejected (`permission-request requires tool_name`) |
+| `tool_input` | object | opt | the tool's arguments; absent or `null` reads as `{}`; any other type rejects the line (§2.2) |
+| `mcp_server` | string | opt | MCP tools only |
+| `cwd` | string | opt | the hook's working directory |
+| `permission_mode` | string | opt | Claude's permission mode (`default`, `acceptEdits`, …) |
+| `session_id` | string | opt | the hook's session id; the provider is told this one, and the pane's bound session only when it is absent |
+
+The optional strings read an empty string as absent. `session_id`, `agent` and `profile` ride
+along as on any hook event, and the dual-fire (§3.1) applies; the daemon reads the agent kind
+from the pane, not from the line. The session id it tells the provider is the line's own when
+present, since the dual-fire binds it to the pane only after the handler ran, and a provider that
+remembers grants per session would otherwise hear the previous session's id after a missed
+SessionStart.
+`kelpi event permission-request` itself sends only `session_id` and `profile` of the three,
+`profile` only beside `session_id` (cli.md §8.7).
+
+```json
+{"command":"permission-request","pane_id":"1B4E…","tool_name":"Bash","tool_input":{"command":"mv a b","description":"Rename a"},"cwd":"/work/app","permission_mode":"default","session_id":"abc-123"}
+```
+
+Reply: `{"ok":true,"behavior":"allow"|"deny"|"abstain","message"?:string,"provider"?:string}`.
+
+- `behavior` is the provider's decision. `abstain` means no decision: the CLI prints nothing and
+  Claude shows its own prompt.
+- `message` is passed through only on `deny`, when the provider gave one.
+- `provider` is the id of the provider the daemon asked: `kelpi.agent.permissions.bundled`
+  (which always abstains) or the selected plugin provider's id.
+- The daemon waits at most **2 s**. A provider that times out, throws or returns a malformed
+  result is answered as `abstain`, with one warning line in the daemon log naming the provider
+  and the reason. Nothing but the provider's own `allow` is ever answered as `allow`.
+- The deadlines form one ladder, each shorter than the next: the provider gets 2 s, the CLI's
+  reply read times out after 3 s of silence and its guard ends the process at 3.5 s, and
+  Claude's own hook timeout (installed as `"timeout": 5`) is 5 s.
+  The 2 s bounds the provider only: a plugin `before` operation hook matching
+  `permission-request` or `*` runs before the handler for up to 5 s, so the CLI's 3.5 s guard
+  and Claude's 5 s timeout are what bound the whole request, and both fail open to the prompt.
+- Each decision, fallbacks included, is also published to plugins as one `agent.event` of
+  type `permission-request` after the reply (agent-lifecycle.md §7.7); an unknown pane, or
+  one whose agent events are muted (#372), publishes none.
+- A pane no workspace owns (the parked-inclusive lookup, as for §6.1): `{"ok":false,"error":"unknown pane"}`.
+- A pane whose agent events are muted while its terminal restarts on a new host (#372):
+  `{"ok":true,"behavior":"abstain"}`, without asking any provider.
+
+```json
+{"ok":true,"behavior":"allow","provider":"example.policy.permissions"}
+{"ok":true,"behavior":"deny","message":"rm -rf is never allowed","provider":"example.policy.permissions"}
+{"ok":true,"behavior":"abstain","provider":"kelpi.agent.permissions.bundled"}
 ```
 
 ---
@@ -690,6 +811,24 @@ false, an Enter keystroke follows the text; when true, text only. Reply is sent
 → {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main","bare":false,"label":"worker"}
 ```
 
+`if_revision` (int, optional, 0 allowed) makes the send conditional on the screen. After
+target resolution the daemon compares it with the pane's current screen revision (see
+`pane-capture`), and the comparison and the write happen in the same synchronous handler
+turn. On a mismatch nothing is written and the reply is
+`{"ok":false,"error":"screen changed","code":"SCREEN_CHANGED","revision":<current>}`. On a
+match the ack gains `revision` (the matched value), so a caller can tell a daemon that
+honoured the guard from an older one that ignored the unknown field. Without `if_revision`
+the request and reply are exactly as above.
+An `if_revision` no revision can equal (a negative one) answers `SCREEN_CHANGED`, not a
+validation error.
+
+```json
+{"command":"pane-send","target":"worker","text":"y","bare":false,"if_revision":42}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main","bare":false,"revision":42,"label":"worker"}
+{"command":"pane-send","target":"worker","text":"y","bare":false,"if_revision":41}
+→ {"ok":false,"error":"screen changed","code":"SCREEN_CHANGED","revision":42}
+```
+
 #### `pane-send-key` (R/R)
 
 Deliver one named keystroke (§5.6) outside any bracketed-paste envelope. Key name is
@@ -701,6 +840,15 @@ mode (DECCKM).
 ```json
 {"command":"pane-send-key","target":"worker","workspace":"beta","key":"enter"}
 → {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"beta","key":"enter","label":"worker"}
+```
+
+`if_revision` works as on `pane-send`: key validation stays first, then target resolution,
+then the revision check, then the ack (with `revision` on a match) and the key. A stale value
+answers the same `SCREEN_CHANGED` reply and sends nothing.
+
+```json
+{"command":"pane-send-key","target":"worker","key":"enter","if_revision":42}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main","key":"enter","revision":42,"label":"worker"}
 ```
 
 #### `pane-resize` (R/R)
@@ -876,7 +1024,43 @@ operation; empty input tails to `""`.
 A present `lines` that is <= 0 fails with `lines must be a positive integer (got N)` before
 the target is resolved (`packages/daemon/src/handlers/pane/input.ts:77-81`). A read that
 throws for a still-present pane answers `{"ok":false,"error":"pane capture failed: <error>"}`
-(`input.ts:136-147`).
+(`input.ts:199-209`).
+
+`settle_ms` (int, optional) waits for the pane to go quiet before the read: the reply is
+held until the pane has had no output for `settle_ms`, counted from when the request is
+handled and restarted by every byte that arrives. Values above 10000 are clamped to 10000
+(the cap is `CAPTURE_SETTLE_CAP_MS`); a value <= 0 fails with
+`settle_ms must be a positive integer (got N)` after the `lines` check and before the target
+is resolved. If the cap is reached first the read happens anyway, at the cap.
+
+The reply always carries three more fields next to `text`, all read in the same synchronous
+turn as the text (after the flush): `revision` (int, the pane's screen revision),
+`cursor` (`{"row":<int>,"col":<int>}`, 0-based, viewport-relative, on the active screen) and
+`alt_screen` (bool, whether the alternate screen is active). `settled` (bool) is present only
+when `settle_ms` was sent: `true` when the pane was quiet for `settle_ms`, `false` when the
+cap came first or the pane's terminal was restarted during the wait.
+
+```json
+{"command":"pane-capture","target":"worker","settle_ms":500}
+→ {"ok":true,"pane_id":"<uuid>","workspace_id":"<uuid>","workspace_name":"main",
+   "text":"…terminal contents…\n","revision":42,"cursor":{"row":23,"col":2},
+   "alt_screen":false,"settled":true,"label":"worker"}
+```
+
+The revision is a per-pane counter that rises by 1 on every output feed with non-empty data
+(counted when the bytes are queued, not when they are parsed), on every restore of a
+non-empty snapshot, and on every resize that changes the grid. Within one daemon run a pane id
+never repeats a revision: the daemon seeds new terminal state (attach, or the lazy create on
+first feed) one past every revision it has issued, so a pane whose terminal state is disposed
+and created again (restart old terminals, a forgotten shell) carries on above its old values.
+A pane with no terminal state reads 0. It is not persisted, but a new daemon seeds its counter
+from the clock (milliseconds since the epoch at start, a 13-digit safe integer), past any value
+an earlier daemon could plausibly have issued, so a revision captured before a restart (terminal
+host handoff, in-app update) is refused with `SCREEN_CHANGED` rather than matching a live screen
+by accident. That is not a hard guarantee: a daemon that averaged more than one revision a
+millisecond over its life, or a clock that stepped back between the two, could leave the new seed
+inside the old range. Pass it back as `if_revision` on `pane-send` / `pane-send-key` to type
+only if nothing has reached the screen since this capture.
 
 #### `pane-sync` (R/R)
 
@@ -920,6 +1104,16 @@ missing → message dropped). Idempotent. Replies with the same sync-status payl
 
 #### `workspace-list` (R/R)
 
+`parent` (optional name-or-id) scopes to the workspaces nested under that one (app-state-core.md
+§2.9), in sidebar order; an unknown or ambiguous parent → the `workspace-delete` resolution
+errors (`workspace not found: <name>` / `workspace name is ambiguous: <name> (use the id)`); an
+empty or whitespace one → `parent must name a workspace (got an empty value)`. A filtered reply
+echoes the resolved parent as top-level `parent_id` and `parent_name`. A daemon that predates
+nesting ignores `parent` and lists every workspace without them, which is how `kelpi workspace
+list --parent` and the plugin SDK refuse its reply instead of passing everything on.
+A nested workspace is listed directly after its parent, collapsed or not, and with `group` it is
+listed with its parent's group.
+
 `group` (optional name-or-id) scopes to one group's members; unknown/ambiguous group →
 `{"ok":false,"error":"no group matches '<filter>'"}` (distinct from an empty group,
 which succeeds with `[]`-ish content). Order: sidebar order (top-level items and group
@@ -942,7 +1136,9 @@ Always-present per entry: `id`, `name`, `color`, `pane_count`, `is_active`,
 `workspace-mute`). Conditionals: `icon` (the flat DB spelling, `"emoji:🔥"` /
 `"system:star"`; absent for the letter avatar),
 `last_activity_at` (max across panes; absent when no panes), `agent_session_id`
-(first pane carrying one), `group_id`/`group_name` (absent for top-level), `repos` (the
+(first pane carrying one), `group_id`/`group_name` (absent for top-level; a nested workspace
+reports its parent's group), `parent_id`/`parent_name` (the workspace it is nested under,
+app-state-core.md §2.9; absent when not nested), `repos` (the
 workspace's repo associations in stored order, each `{"repo_id", "repo_name", "repo_path",
 "worktree_path", "branch"}` with `repo_name`/`repo_path` absent when the repo left the
 registry and `branch` absent when unknown; the whole field is absent when there are none).
@@ -1033,10 +1229,63 @@ Names are sanitized before any git work: an unusable `worktree` →
 (`workspaces.ts:232`), and the worktree reply also carries `group` when the workspace was
 placed in one (`workspaces.ts:352-358`).
 
+Nesting (app-state-core.md §2.9): `parent` (workspace name-or-id) creates the workspace nested
+under that one; `parent_pane_id` (a pane UUID; `kelpi workspace create --nested` forwards
+`KELPI_PANE_ID`) nests it under the workspace holding that pane. Both are checked before
+anything is created, on every branch (plain, repository, worktree): both given →
+`give either parent or parent_pane_id, not both`; with `group` →
+`a nested workspace follows its parent's group: pass a parent or a group, not both`; an unknown
+or ambiguous `parent` → `parent workspace not found: <name>` /
+`parent workspace name is ambiguous: <name> (use the id)`; an empty or whitespace `parent` →
+`parent must name a workspace (got an empty value)` (and `parent_pane_id` → `parent_pane_id
+must name a pane (got an empty value)`); an unknown pane →
+`no pane matches '<id>', so there is no workspace to nest under`; a parent that is itself nested
+→ `'<name>' is nested itself; workspaces nest one level deep`. A nested create takes the group
+defaults (§5.5 repository and worktree switch) from the parent's group, and never creates a
+group. Every success reply of a nested create carries `parent_id` and `parent_name`, what the
+store holds, so a caller can tell a daemon that predates nesting (which drops both fields and
+creates the workspace at the top level); `kelpi workspace create --parent/--nested` then exits
+non-zero.
+
+The repository and worktree branches check the parent again once their git work is done, since
+it can be deleted (or nested under another workspace) meanwhile. The repository branch has made
+nothing yet, so it fails whole: `parent '<name>' was deleted while the workspace was being
+created`, or `parent '<name>' changed while the workspace was being created: <refusal>`. The
+worktree branch already has its worktree, so (like a cancel that arrives after git, graft-git.md
+§8.5.2) it completes, at the top level, and the reply adds `"parent_lost": true` and
+`parent_lost_reason` (the same sentence) in place of `parent_id`. The CLI exits non-zero with
+that sentence, and the plugin SDK rejects with `PARENT_LOST`.
+
+```json
+{"command":"workspace-create","name":"worker-1","parent":"orchestrator"}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"worker-1","muted":false,
+   "parent_id":"<uuid>","parent_name":"orchestrator"}
+```
+
+#### `workspace-nest` (R/R)
+
+`name` (required non-empty) = workspace name-or-id; `parent` (required) = the workspace to nest it
+under, name-or-id; `index` (int, optional) = position among the parent's nested workspaces after
+removal (absent = append). Nests the workspace one level deep, or reorders it within its parent.
+Request/response, unlike `workspace-move`, because nesting can be refused and the caller needs the
+reason (app-state-core.md §2.9): unknown/ambiguous `name` → the `workspace-delete` resolution
+errors; unknown/ambiguous `parent` → the same, prefixed `parent `; the parent is nested itself →
+`'<name>' is nested itself; workspaces nest one level deep`; an empty or whitespace `parent` →
+`parent must name a workspace (got an empty value)`; the workspace has nested workspaces
+of its own → `'<name>' has nested workspaces; workspaces nest one level deep`; the two are the
+same → `'<name>' cannot be nested under itself`. Un-nesting is `workspace-move`.
+
+```json
+{"command":"workspace-nest","name":"worker-2","parent":"orchestrator","index":0}
+→ {"ok":true,"workspace_id":"<uuid>","workspace_name":"worker-2",
+   "parent_id":"<uuid>","parent_name":"orchestrator","index":0}
+```
+
 #### `workspace-move` (F&F)
 
 `name` (required non-empty) = workspace name-or-id. `group` = destination group name
-(nil / empty = top level); `index` (int) = position. No reply; resolution failures
+(nil / empty = top level); `index` (int) = position. A nested workspace is taken out of its
+parent (app-state-core.md §2.9); nesting is `workspace-nest`. No reply; resolution failures
 no-op silently.
 
 ```json
@@ -1045,8 +1294,15 @@ no-op silently.
 
 #### `workspace-delete` (R/R)
 
-`name` (required non-empty) = workspace name-or-id; `force` (bool, default false).
-Refusals: last remaining workspace; ambiguous name; unknown name; agent-panes guard
+`name` (required non-empty) = workspace name-or-id; `force` (bool, default false);
+`cascade` (bool, default false; app-state-core.md §2.9) also deletes the workspaces nested under
+it: their panes are closed with the parent's, the last-workspace guard counts them, the agent
+guard sums their agents with the parent's (the error then reads `workspace <name> and its nested
+workspace(s) have …`), worktree cleanup treats each as an owner of its own worktrees, and the
+success reply carries `deleted_children` (their ids) and `deleted_child_names` (their names, index
+for index), so a caller deleting several targets can tell one this cascade already took from one
+that never existed. Without `cascade` they move into the deleted
+workspace's sidebar slot. Refusals: last remaining workspace; ambiguous name; unknown name; agent-panes guard
 without force (running, waiting for input, or idle with a bound session, including
 parked panes; see agent-lifecycle §11) —
 
@@ -1238,7 +1494,9 @@ exit 1, as for `workspace-rename`.
 #### `group-list` (R/R)
 
 No parameters. Groups in sidebar order (unplaced groups appended; duplicates
-de-duplicated); members in each group's child order.
+de-duplicated); members in each group's child order, each followed by the workspaces nested under
+it (app-state-core.md §2.9), which carry `parent_id` and `parent_name`. Those belong to the group
+too: they are what `workspace-list` `group` lists and what `group-delete` `cascade` deletes.
 
 ```json
 {"command":"group-list"}
@@ -1611,6 +1869,13 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `session_id` | string | `session-start`, `session-end`, dual-fire on any |
 | `background_tasks` | int | `stop`, `notification` |
 | `agent` | string | `start`, `session-start` (+ dual-fire) |
+| `notification_type` | string | `notification` (#387, Claude-only) |
+| `last_assistant_message` | string | `stop` (#387, Claude-only, at most 64 KiB of UTF-8) |
+| `last_assistant_message_truncated` | bool | `stop` (#387, `true` only when the CLI cut the message) |
+| `transcript_path` | string | `notification`, `stop`, `session-start` (#387) |
+| `tool_name` | string | `notification` (#387, Codex PermissionRequest), `permission-request` (#388, required) |
+| `tool_input` | object | `permission-request` (#388) |
+| `mcp_server`, `cwd`, `permission_mode` | string | `permission-request` (#388) |
 | `direction` | string | `pane-split`, `pane-move`, `web-open` (GUI split anchor) |
 | `path` | string | `pane-split`, `pane-create`, `workspace-create`, `open` |
 | `name` | string | `pane-split`/`pane-create` (label), `pane-name` (new label), `workspace-*` (name-or-id or new name), `group-*` (name-or-id), `layout-select` (layout name), `pane-move-to-workspace` (dest ws), `web-cookies-delete` (cookie name) |
@@ -1620,11 +1885,11 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `key` | string | `pane-send-key`, `web-key` |
 | `bare` | bool | `pane-send` |
 | `new_name` | string | `group-rename`, `workspace-rename` |
-| `cascade` | bool | `group-delete` |
+| `cascade` | bool | `group-delete`, `workspace-delete` |
 | `force` | bool | `workspace-delete` |
 | `worktree_paths`, `force_worktree_paths`, `batch_ids` | string[] | `workspace-delete` |
 | `prune_worktrees`, `delete_branches` | bool | `workspace-delete` |
-| `index` | int | `workspace-move`, `group-move` |
+| `index` | int | `workspace-move`, `workspace-nest`, `group-move` |
 | `group` | string | `workspace-create`, `workspace-move`, `workspace-list` |
 | `profile` | string | `workspace-create`, `workspace-profile`, `session-start` (+ dual-fire on any session-id-bearing event, §3.1) |
 | `workspace` | string | pane-target commands, `pane-list`, `pane-sync`, `graft-*`, `pane-split`/`pane-create` (destination) |
@@ -1680,9 +1945,13 @@ other key is ignored. (A known key with the wrong type poisons the whole message
 | `create_worktree` | bool | `group-set-repo` |
 | `repo_id` | string | `group-set-repo` |
 | `group_defaults` | bool | `workspace-create` |
+| `parent` | string | `workspace-create`, `workspace-nest`, `workspace-list` (workspace name-or-id, app-state-core.md §2.9) |
+| `parent_pane_id` | string (UUID) | `workspace-create` (nest under the workspace holding this pane, §2.9) |
 | `focus` | bool | `pane-split`, `pane-create`, `open`, `web-open`, `pane-move`, `pane-move-adjacent` (absent = background, #295) |
 | `gesture` | bool | `web-open`, `web-navigate`, `web-back`, `web-forward`, `web-reload`, `web-tab-new` (the GUI's mark for a navigation the user made; only those pages enter the browsing history, #375; the CLI never sends it) |
 | `typed` | bool | `web-navigate` (the URL bar's submit or a picked suggestion, ranked as typed in the browsing history, #375) |
+| `settle_ms` | int | `pane-capture` (wait for that much quiet before reading, capped at 10000, #390) |
+| `if_revision` | int | `pane-send`, `pane-send-key` (refuse with `SCREEN_CHANGED` unless the screen revision still matches, #390) |
 
 ---
 
@@ -1852,3 +2121,55 @@ saved state keep working:
     they assume a user's click; plugin code that runs without a gesture (a backend reacting to
     events or timers) must pass `focus: false`. A raw plugin `command` follows the wire
     default.
+
+18. **Agent hook fields are additive (issue #387).** `notification` gains `notification_type`,
+    `transcript_path` and `tool_name`; `stop` gains `last_assistant_message`,
+    `last_assistant_message_truncated` and `transcript_path`; `session-start` gains
+    `transcript_path` (§6.1). All are optional and decoded only when present, so a line
+    without them decodes to exactly the message it always did. Compatibility, in each
+    direction:
+    - **Old CLI, new daemon:** the hook never sends the keys, the decoder leaves them off the
+      message, and the daemon behaves as before (decoder tests in
+      `packages/protocol/src/wire/decode.test.ts`).
+    - **New CLI, old daemon:** the keys are unknown to that daemon's decoder and ignored
+      (§2.2), so the event is handled exactly as an older CLI's.
+    - **Same version:** the CLI sends each key only when the hook's stdin carried it as a
+      non-empty string, so a manual `kelpi event stop` stays wire-identical. The one new key
+      that can be large, `last_assistant_message`, is capped at 64 KiB by the CLI: even
+      escaped six-fold as JSON, far below the 64 MB line limit (§2.1).
+
+19. **`permission-request` is a new request/response verb (issue #388).** It adds the allowlist
+    entry, the §6.1.1 command and four request keys (`tool_input`, `mcp_server`, `cwd`,
+    `permission_mode`; `tool_input` is the first object-typed field, §2.2). Compatibility, in
+    each direction:
+    - **Old CLI, new daemon:** an older CLI has no `kelpi event permission-request` and never
+      sends the verb or the new keys, so nothing it sends decodes differently.
+    - **New CLI, old daemon:** the older daemon's decoder rejects the line as an unknown
+      command, which it never answers (§9 item 3). The CLI gets no reply, prints nothing once
+      its own deadline passes, and Claude shows its normal prompt.
+    - **Same version:** the daemon always replies, within its 2 s provider deadline, and fails
+      open to `abstain`, never to `allow` (§6.1.1).
+      A plugin `before` operation hook on the command runs first and can delay that reply;
+      the CLI's own deadline then leaves the prompt to Claude.
+
+20. **Screen revision, `settle_ms` and `if_revision` (issue #390).** `pane-capture` now reports
+    the pane's screen revision with the text, and `pane-send` / `pane-send-key` can refuse unless
+    the revision still matches, so an agent that read a prompt does not type into a screen that
+    has moved on. All three request fields are additive and optional. Compatibility, in each
+    direction:
+    - **Old CLI or agent, new daemon:** captures gain `revision`, `cursor` and `alt_screen`
+      (extra keys an old reader ignores), and sends and send-keys are unchanged because they
+      carry no `if_revision`.
+    - **New CLI, old daemon:** `if_revision` and `settle_ms` are ignored as unknown fields
+      (§2.2). The send is typed unguarded, and the capture returns at once without `revision`,
+      `cursor` or `alt_screen`. The ack of a guarded send lacks `revision`, which is how a
+      caller can tell the daemon did not check.
+    - **Old window client, new daemon:** no effect, the window client sends none of these fields.
+    The revision counts what the daemon has fed to its terminal state. With the terminal host
+    (#273, `docs/terminal-host.md`), output the host has read from the PTY but the daemon has not
+    yet fed is not counted, so the guard covers what the daemon had seen, which is also what the
+    capture showed. Within one daemon run a pane id never repeats a revision (new terminal state
+    is seeded past every value the daemon has issued, and a pane with no terminal state reads 0),
+    and a new daemon seeds its counter from the clock (milliseconds since the epoch at start),
+    past any value an earlier daemon could plausibly have issued, so a stale revision from before a
+    restart is refused with `SCREEN_CHANGED`, never reissued for a different screen.

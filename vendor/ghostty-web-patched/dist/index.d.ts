@@ -1707,6 +1707,7 @@ export declare class SelectionManager {
     private mouseDownTarget;
     private unitAnchor;
     private pressSelectedWord;
+    private pressPoint;
     private dirtySelectionRows;
     private selectionChangedEmitter;
     private boundMouseUpHandler;
@@ -1750,6 +1751,8 @@ export declare class SelectionManager {
     trackSelectionForWrite(): boolean;
     /** Reconcile the copy reader and highlight with the same surviving native endpoints. */
     restoreSelectionAfterWrite(): void;
+    /** vendor 0.4.0-kelpi.22: end a press that never selected, e.g. when output discarded its row. */
+    private abandonPress;
     /**
      * Clear the selection
      */
@@ -1836,6 +1839,9 @@ export declare class SelectionManager {
      * the anchor's start to the end of the word (line) under the pointer. Blank space under the
      * pointer of a word drag ends it at that cell. `selectionEnd` stays the moving end, which is
      * what auto-scroll compares against.
+     *
+     * vendor 0.4.0-kelpi.23: `point` is the pointer's canvas position, in pixels; a drag from a
+     * single press uses it to tell a drag from a wobble (`dragSelection`).
      */
     private extendSelectionTo;
     /**
@@ -1848,6 +1854,29 @@ export declare class SelectionManager {
      * Convert pixel coordinates to terminal cell coordinates
      */
     private pixelToCell;
+    /**
+     * vendor 0.4.0-kelpi.22: what a drag from a single press to a cell selects, or null for nothing.
+     *
+     * vendor 0.4.0-kelpi.23 (#404): the pressed cell to the cell under the pointer, both included,
+     * as upstream, xterm.js and Kelpi before `-kelpi.22` did, but nothing while the pointer is still
+     * within a dead zone around the press point, 60% of a cell width in either axis. So a click, or a
+     * press that wobbles a pixel or two (even over a cell or row boundary), selects nothing, and a
+     * single character is selected by dragging a little way across it. The dead zone is measured on
+     * the canvas, so output that moves text under a held press does not turn it into a drag; the
+     * selection is still anchored on the pressed cell, which is pinned across trims (#170).
+     *
+     * `-kelpi.22` used Ghostty's threshold rule instead: a cell counted only once the drag had crossed
+     * 60% of it in the drag's direction. Kelpi users stop a drag in the middle of the last character
+     * they want, and that rule left it out (`conversation-00667` copied as `conversation-0066`).
+     */
+    private dragSelection;
+    /**
+     * vendor 0.4.0-kelpi.23: the first half of the wide glyph a cell is the second half of, or the
+     * cell itself. `getSelection` skips a glyph's second half (it holds no character) and the
+     * renderer highlights a wide glyph from its first, so a selection starting on the second half
+     * would neither copy nor show the glyph it starts on.
+     */
+    private wideGlyphStart;
     /**
      * Normalize selection coordinates (handle backward selection)
      * Returns coordinates in VIEWPORT space for rendering, clamped to visible area

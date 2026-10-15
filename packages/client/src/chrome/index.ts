@@ -254,6 +254,7 @@ export {
     type GroupSpan,
     type GroupSpanLayout,
     type RenderedRow,
+    type ResolveDropOptions,
     type SidebarOrderModel,
     type SidebarSlot,
     type WorkspaceLocation
@@ -287,6 +288,7 @@ export {
     type SubmitResult,
     type WorkspaceWorktreeRequest,
     type ChromeLabelPreset,
+    type ChromeNestedWorkspaces,
     type ChromePane,
     type ChromeSidebarEntry,
     type ChromeWorkspace,
@@ -294,8 +296,10 @@ export {
     type GroupRepoChange,
     type NewGroupRepo,
     type SidebarCallbacks,
+    type WorkspaceDeleteOptions,
     type WorkspaceMoveRequest,
-    type WorkspacesMoveRequest
+    type WorkspacesMoveRequest,
+    type WorkspacesNestRequest
 } from './types';
 
 export {
