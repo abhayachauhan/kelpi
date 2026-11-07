@@ -714,3 +714,24 @@ input {
   margin-left: auto;
   margin-right: 0;
 }
+
+/* Readable workspace navigation. Compact restores the original row density. */
+.workspace-navigation { padding: 4px 12px 10px; color: var(--kelpi-fg); }
+.workspace-navigation-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.workspace-count { opacity: .55; font-size: 12px; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.workspace-navigation-heading button { font-size: 12px; font-weight: 400; padding: 4px 6px; border-radius: 6px; color: var(--kelpi-fg-secondary); }
+.workspace-activity-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.workspace-activity-filters button { display: flex; justify-content: space-between; align-items: center; gap: 4px; min-width: 0; padding: 6px 8px; border: 1px solid var(--kelpi-border); border-radius: 7px; font-size: 12px; text-align: left; color: var(--kelpi-fg-secondary); }
+.workspace-activity-filters button span { font-variant-numeric: tabular-nums; opacity: .7; }
+.workspace-activity-filters button[aria-pressed="true"] { background: var(--kelpi-selection-fill); border-color: var(--kelpi-selection-stroke); color: var(--kelpi-fg); }
+.workspace-navigation button:focus-visible { outline: 2px solid var(--kelpi-accent); outline-offset: 2px; }
+.workspace-navigation button:hover { background: var(--kelpi-selection-fill); }
+[data-workspace-density="comfortable"] [data-workspace-row]:not([data-drag-hidden="true"]) { min-height: 52px; padding-top: 9px; padding-bottom: 9px; }
+[data-workspace-density="comfortable"] [data-workspace-name] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; font-size: 15px; line-height: 1.35; color: var(--kelpi-fg) !important; }
+[data-workspace-summary] { font-size: 12px; line-height: 1.5; color: var(--kelpi-fg-secondary); margin-top: 3px; }
+[data-workspace-density="compact"] [data-workspace-summary] { display: none; }
+[data-workspace-state] { color: var(--kelpi-fg-secondary); }
+[data-workspace-density="comfortable"] [data-workspace-group] { min-height: 42px; margin-top: 10px; }
+[data-workspace-density="comfortable"] [data-workspace-group] .font-bold, [data-workspace-density="comfortable"][data-workspace-group] .font-bold { font-size: 15px; }
+[data-workspace-density="comfortable"] [data-testid="sidebar-filter"] { font-size: 14px; }
+[data-workspace-density="comfortable"] [data-testid="row-group-caption"] { font-size: 12px; padding-bottom: 6px; }

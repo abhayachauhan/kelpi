@@ -121,17 +121,8 @@ describe('rendering', () => {
         expect(within(alpha).getByText('+1')).toBeDefined();
     });
 
-    /**
-     * §H5: a row is NAME + LABELS and nothing else.
-     *
-     * `WorkspaceRowView.swift:54-77` is `VStack(alignment: .leading, spacing: 3) { name; labels }`
-     * — no branch chip, no pane count, no running/waiting counters. The port used to carry all
-     * four on a third `text-[10px]` line, which added a whole text line to every row and cost the
-     * sidebar the shipped app's density. This asserts what the Swift renders, so the line cannot
-     * come back by accident: the alpha fixture has a `main` branch and a pane, and neither
-     * reaches the row.
-     */
-    it('§H5: renders no third metadata line — no branch, no pane count, no counters', () => {
+    // Keep the row concise: names, labels and a readable agent activity summary.
+    it('shows activity without adding branch or pane-count clutter', () => {
         render(
             <Sidebar
                 {...noopProps()}
@@ -148,9 +139,10 @@ describe('rendering', () => {
             expect(within(alpha).queryByTestId(testid), testid).toBeNull();
         // The whole row says the name and the labels, and not "2 panes" or "● 1".
         expect(alpha.textContent).not.toMatch(/pane|●/);
-        // The two children of the name column are exactly the name and the label strip.
+        // The name column adds one live activity summary to the name and label strip.
         const column = alpha.querySelector('span.flex-col');
-        expect(column?.children.length).toBe(2);
+        expect(column?.children.length).toBe(3);
+        expect(column?.querySelector('[data-workspace-summary]')?.textContent).toBe('1 waiting · 1 running');
     });
 
     /**

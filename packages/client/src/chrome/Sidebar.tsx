@@ -108,6 +108,7 @@ import {
     type ChromeBucket
 } from './theme';
 import { tokens } from './tokens';
+import { agentCounts, type AgentCounts, workspaceActivity, readWorkspaceDensity, WORKSPACE_DENSITY_KEY, type WorkspaceActivity } from './workspace-activity';
 import {
     DEFAULT_PROFILE_NAME,
     WORKSPACE_COLORS,
@@ -515,10 +516,7 @@ function rowRect(event: React.MouseEvent): { top: number; bottom: number } | nul
     return { top: rect.top, bottom: rect.bottom };
 }
 
-interface AgentCounts {
-    readonly running: number;
-    readonly waiting: number;
-}
+
 
 /**
  * §WS-007's guide-rule tint — the group's own colour at 0.55, or the theme divider when it
@@ -539,19 +537,7 @@ const WORKSPACE_STATUS_ITEMS: readonly (readonly [PaneStatus, string])[] = [
  * Exported for the remote-daemon sections (§1.7): identical badges, one implementation. A
  * workspace's own hand-set status (agent-lifecycle §5.10) counts as one more pane would.
  */
-export function agentCounts(workspaces: readonly ChromeWorkspace[]): AgentCounts {
-    let running = 0;
-    let waiting = 0;
-    for (const workspace of workspaces) {
-        if (workspace.status === 'running') running += 1;
-        else if (workspace.status === 'waitingForInput') waiting += 1;
-        for (const pane of workspace.panes) {
-            if (pane.status === 'running') running += 1;
-            else if (pane.status === 'waitingForInput') waiting += 1;
-        }
-    }
-    return { running, waiting };
-}
+export { agentCounts } from './workspace-activity';
 
 /**
  * A group header's badge: its members AND (§2.9) their nested workspaces, which belong to the
@@ -1041,9 +1027,9 @@ interface WorkspaceRowProps {
  */
 export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps): ReactElement {
     const { workspace } = props;
-    // Feeds the avatar's status dot ONLY (§AGNT-103) — the row's git branch and pane count went
-    // with §H5's invented metadata line, because `WorkspaceRowView.swift` renders neither.
+    // Native activity drives both the avatar dot and the readable status line.
     const own = agentCounts([workspace]);
+    const activity = workspaceActivity(workspace);
     const childCount = props.childCount ?? 0;
     const childrenHidden = childCount > 0 && props.childrenCollapsed === true;
     // §2.9's rollup: a collapsed parent's dot answers for the workspaces folded under it.
@@ -1234,6 +1220,8 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
             tabIndex={-1}
             aria-selected={props.active}
             data-testid="workspace-row"
+            data-workspace-activity={activity.state}
+            data-workspace-row
             data-workspace-id={workspace.id}
             {...(props.groupID === undefined || props.groupID === null ? {} : { 'data-group-id': props.groupID })}
             data-depth={props.depth}
@@ -1337,6 +1325,8 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                     />
                 ) : (
                     <span
+                        data-workspace-name
+                        title={workspace.name}
                         className="truncate text-[13px] font-semibold"
                         style={{ color: props.active ? tokens.textPrimary : tokens.textSecondary }}
                     >
@@ -1344,19 +1334,10 @@ export const WorkspaceRow = memo(function WorkspaceRow(props: WorkspaceRowProps)
                     </span>
                 )}
                 <LabelChips labels={workspace.labels} presets={props.presets} bucket={props.bucket} />
-                {/*
-                 * §H5: THERE IS NO THIRD LINE. `WorkspaceRowView.swift:54-77` is exactly
-                 * `VStack(alignment: .leading, spacing: 3) { name; labels }` — no branch chip, no
-                 * pane count, no running/waiting counters. The port used to carry all four in a
-                 * `text-[10px]` metadata span, which added a whole text line to every row and cost
-                 * the sidebar the shipped app's density.
-                 *
-                 * The agent state a row DOES report is the one the Swift reports: the pulsing dot
-                 * on the avatar (`Avatar` ▸ `StatusDot`, §AGNT-103), which is unchanged — the
-                 * `counts` this row computes still feed it, and waiting still beats running there.
-                 * The branch and the pane count live in the inspector and the footer, as they do
-                 * in the shipped app.
-                 */}
+                <span data-workspace-summary className="truncate" title={[activity.label, activity.tools].filter(Boolean).join(' · ')}>
+                    <span data-workspace-state>{activity.label}</span>
+                    {activity.tools ? <span> · {activity.tools}</span> : null}
+                </span>
                 {/* L6: the "in <group>" caption is NOT part of the name column — see below. */}
             </span>
             {/*
@@ -1553,6 +1534,7 @@ export const GroupHeaderRow = memo(function GroupHeaderRow(props: GroupHeaderRow
                 props.registerRow(`header:${group.id}`, element);
             }}
             data-testid="group-header"
+            data-workspace-group
             data-group-id={group.id}
             data-collapsed={props.collapsed ? 'true' : 'false'}
             data-drop-preview={props.dropPreview ? 'true' : 'false'}
@@ -2246,6 +2228,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const bucket = props.bucket ?? 'dark';
     const presets = props.labelPresets ?? EMPTY_PRESETS;
     const rowHeight = props.rowHeight ?? DEFAULT_ROW_HEIGHT;
+    const [activityFilter, setActivityFilter] = useState<WorkspaceActivity | 'all'>('all');
+    const [density, setDensity] = useState(readWorkspaceDensity);
+    const toggleDensity = (): void => {
+        const next = density === 'comfortable' ? 'compact' : 'comfortable';
+        setDensity(next);
+        try { window.localStorage.setItem(WORKSPACE_DENSITY_KEY, next); } catch { /* Storage is optional. */ }
+    };
     const springLoadMs = props.springLoadMs ?? SPRING_LOAD_MS;
     const autoScrollIntervalMs = props.autoScrollIntervalMs ?? AUTO_SCROLL_INTERVAL_MS;
 
@@ -3025,6 +3014,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                 part.remove();
             }
             sanitizeGhost(ghost);
+            ghost.dataset.workspaceDensity = source.closest<HTMLElement>('[data-workspace-density]')?.dataset.workspaceDensity ?? 'comfortable';
             ghost.setAttribute('data-testid', 'sidebar-drag-ghost');
             ghost.setAttribute('aria-hidden', 'true');
             ghost.style.position = 'fixed';
@@ -3810,7 +3800,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
     const scrollTarget = props.scrollToWorkspaceID ?? null;
     const scrollGroupTarget = props.scrollToGroupID ?? null;
     const onScrollHandled = props.onScrollHandled;
-    const filterActive = props.filter.trim().length > 0;
+    const filterActive = props.filter.trim().length > 0 || activityFilter !== 'all';
     const revealMs = props.revealMs ?? REVEAL_MS;
     /** Bumped by a measure retry, so the effect re-runs without `rows` having changed. */
     const [revealTick, setRevealTick] = useState(0);
@@ -4944,28 +4934,35 @@ export function Sidebar(props: SidebarProps): ReactElement {
 
     // ── filtered list ───────────────────────────────────────────────────────────
     const needle = props.filter.trim();
+    const allWorkspaceRows = useMemo(() => filteredRows(props.entries, ''), [props.entries]);
+    const activityCounts = useMemo(() => {
+        const counts = { all: allWorkspaceRows.length, waiting: 0, running: 0, idle: 0 };
+        for (const { workspace } of allWorkspaceRows) counts[workspaceActivity(workspace).state] += 1;
+        return counts;
+    }, [allWorkspaceRows]);
+    const filtering = needle.length > 0 || activityFilter !== 'all';
     const filtered = useMemo(
-        () => (needle.length === 0 ? [] : filteredRows(props.entries, needle)),
-        [needle, props.entries]
+        () => filteredRows(props.entries, needle).filter(row => activityFilter === 'all' || workspaceActivity(row.workspace).state === activityFilter),
+        [needle, props.entries, activityFilter]
     );
 
     const dragStartWorkspace = useCallback(
         (workspaceID: string, event: React.MouseEvent) => {
-            if (needle.length > 0) return; // §5.1: no drag & drop in the filtered list.
+            if (filtering) return; // Moving a filtered subset would reorder hidden workspaces.
             onDragStart('workspace', workspaceID, event);
         },
-        [needle.length, onDragStart]
+        [filtering, onDragStart]
     );
     const dragStartGroup = useCallback(
         (groupID: string, event: React.MouseEvent) => {
-            if (needle.length > 0) return; // §5.1: no drag & drop in the filtered list.
+            if (filtering) return; // Moving a filtered subset would reorder hidden workspaces.
             onDragStart('group', groupID, event);
         },
-        [needle.length, onDragStart]
+        [filtering, onDragStart]
     );
 
     const body =
-        needle.length > 0 ? (
+        filtering ? (
             /* Flex for the same reason the main list is: the filtered list draws the same rows
                with the same ring, so it needs the same uncollapsed 2 + 2 between them. */
             <div data-testid="sidebar-filtered" className="flex flex-col">
@@ -5016,6 +5013,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                                 // REACH a workspace rather than a view to work inside.
                                 if (selection.size > 0) setSelection(EMPTY_SELECTION);
                                 props.onActivateWorkspace?.(id);
+                                setActivityFilter('all');
                                 props.onFilterChange('');
                             }}
                             onContextMenu={onWorkspaceContextMenu}
@@ -5250,6 +5248,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
     return (
         <div
             data-testid="sidebar"
+            data-workspace-density={density}
             className="flex h-full min-h-0 flex-col"
             style={{
                 background: tokens.sidebarBackground,
@@ -5297,19 +5296,21 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         }}
                         onKeyDown={(event) => {
                             if (event.key === 'Enter') {
-                                const first = filtered[0];
+                                const first = filtering ? filtered[0] : undefined;
                                 // §WS-011: activate, clear the SELECTION, clear the field,
                                 // yield focus — in that order. A selection made while filtering
                                 // must not survive the jump, or the next bulk gesture acts on
                                 // rows the user can no longer see.
                                 if (first !== undefined) props.onActivateWorkspace?.(first.workspace.id);
                                 if (selection.size > 0) setSelection(EMPTY_SELECTION);
+                                setActivityFilter('all');
                                 props.onFilterChange('');
                                 event.currentTarget.blur();
                                 return;
                             }
                             if (event.key === 'Escape') {
                                 event.stopPropagation();
+                                setActivityFilter('all');
                                 props.onFilterChange('');
                                 event.currentTarget.blur();
                             }
@@ -5341,6 +5342,24 @@ export function Sidebar(props: SidebarProps): ReactElement {
                             <ChromeIcon name="clear" size={13} />
                         </button>
                     ) : null}
+                </div>
+            </div>
+
+            <div className="workspace-navigation" aria-label="Workspace activity">
+                <div className="workspace-navigation-heading">
+                    <span>Workspaces <span className="workspace-count">{activityCounts.all}</span></span>
+                    <button type="button" aria-label={density === 'comfortable' ? 'Use compact workspace rows' : 'Use larger workspace rows'}
+                        aria-pressed={density === 'comfortable'} onClick={toggleDensity}>
+                        {density === 'comfortable' ? 'Compact' : 'Larger'}
+                    </button>
+                </div>
+                <div className="workspace-activity-filters" role="group" aria-label="Filter workspace activity">
+                    {([['all', 'All'], ['waiting', 'Waiting'], ['running', 'Running'], ['idle', 'Idle']] as const).map(([state, label]) => (
+                        <button key={state} type="button" data-activity-filter={state} aria-pressed={activityFilter === state}
+                            onClick={() => { setActivityFilter(state); if (selection.size > 0) setSelection(EMPTY_SELECTION); }}>
+                            {label} <span>{activityCounts[state]}</span>
+                        </button>
+                    ))}
                 </div>
             </div>
 

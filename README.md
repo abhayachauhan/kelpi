@@ -920,3 +920,7 @@ npx vitest run packages/daemon/tests/compat                                  # t
 KELPI_COMPAT_CLI="$PWD/packages/cli/dist/kelpi.js" \
   npx vitest run packages/daemon/tests/compat                                # the TypeScript CLI
 ```
+
+## Readable workspace navigation
+
+Workspace names now start larger, with activity and Claude/Codex below each name. Filter All, Waiting, Running or Idle without rearranging your groups. The Compact button restores the original density. See [workspace navigation](docs/workspace-sidebar.md) for details and a sample.
