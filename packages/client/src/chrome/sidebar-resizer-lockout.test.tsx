@@ -12,7 +12,7 @@
  * Testing Library's synthesized events arrive without `clientX`.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SidebarResizer } from './SidebarResizer';
@@ -165,3 +165,23 @@ describe('sidebar resizer: a gesture always ends (issue #79)', () => {
         expect(onResize).toHaveBeenLastCalledWith(270);
     });
 });
+
+ it.each(['left','right'] as const)('respects a wider side-panel range when docked %s',side=>{
+ const resize=vi.fn();const commit=vi.fn();render(<SidebarResizer side={side} width={280} minimumWidth={240} maximumWidth={640} label="Resize side panel" onResize={resize} onCommit={commit}/>);
+ const edge=screen.getByRole('separator',{name:'Resize side panel'});press(edge,500);moveTo(side==='right'?0:1000);expect(resize).toHaveBeenLastCalledWith(640);
+ moveTo(side==='right'?1000:0);expect(resize).toHaveBeenLastCalledWith(240);window.dispatchEvent(new MouseEvent('pointerup'));expect(commit).toHaveBeenLastCalledWith(240);
+ });
+ it('captures pointer input across plugin iframes and releases capture when the gesture ends',()=>{
+ const resize=vi.fn();render(<SidebarResizer width={280} onResize={resize}/>);const edge=screen.getByTestId('sidebar-resizer');const set=vi.fn();const release=vi.fn();Object.assign(edge,{setPointerCapture:set,releasePointerCapture:release});
+ const event=new MouseEvent('pointerdown',{clientX:280,button:0,bubbles:true});Object.defineProperty(event,'pointerId',{value:12});edge.dispatchEvent(event);expect(set).toHaveBeenCalledWith(12);
+ moveTo(300);window.dispatchEvent(new MouseEvent('pointerup'));expect(release).toHaveBeenCalledWith(12);resize.mockClear();moveTo(200);expect(resize).not.toHaveBeenCalled();
+ });
+
+ it.each(['left','right'] as const)('supports arrow keys and bounds on the %s panel edge', side=>{
+ const resize=vi.fn();const commit=vi.fn();render(<SidebarResizer side={side} width={280} minimumWidth={240} maximumWidth={640} label="Resize side panel" onResize={resize} onCommit={commit}/>);
+ const edge=screen.getByRole('separator',{name:'Resize side panel'});expect(edge.tabIndex).toBe(0);
+ fireEvent.keyDown(edge,{key:'ArrowLeft'});expect(resize).toHaveBeenLastCalledWith(side==='right'?304:256);
+ fireEvent.keyDown(edge,{key:'End'});expect(commit).toHaveBeenLastCalledWith(640);
+ fireEvent.keyDown(edge,{key:'Home'});expect(commit).toHaveBeenLastCalledWith(240);
+ resize.mockClear();fireEvent.keyDown(edge,{key:'Enter'});expect(resize).not.toHaveBeenCalled();
+ });

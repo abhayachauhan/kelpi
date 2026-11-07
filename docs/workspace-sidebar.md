@@ -16,3 +16,7 @@ Choose **Compact** to restore the original row density. Choose **Larger** to ret
 ![Native workspace sidebar with sample tasks](workspace-sidebar.png)
 
 The image uses sample workspaces. No session data or permission settings change with this feature.
+
+The side panel, including Agents, now has a draggable inner edge. Drag left or right to resize between 240px and 640px. The width is remembered per device and works when the sidebars swap sides.
+
+The side-panel divider has a visible grip. Focus the divider and use Left/Right arrows for 24px adjustments, or Home/End for the width limits. Pointer capture keeps the drag working over plugin frames. The bundled Inspector fills the chosen width too.

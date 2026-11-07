@@ -364,7 +364,9 @@ export function Inspector(props: InspectorProps): ReactElement {
             data-testid="inspector"
             className={`flex h-full min-h-0 shrink-0 flex-col ${props.side === 'left' ? 'border-r' : 'border-l'}`}
             style={{
-                width: INSPECTOR_WIDTH_PX,
+                width: '100%',
+                minWidth: 0,
+                maxWidth: '100%',
                 borderColor: tokens.divider,
                 background: tokens.sidebarBackground,
                 color: tokens.textPrimary

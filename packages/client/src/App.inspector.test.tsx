@@ -366,3 +366,20 @@ describe('the inspector’s slide (§APP-066)', () => {
         expect(screen.getByTestId('inspector-slot').style.width).toBe('280px');
     });
 });
+
+ describe('side panel width',()=>{
+ it('drags the right edge in either direction, saves width, and restores it after remount',async()=>{
+ setup();fireEvent.keyDown(window,{code:'KeyI',key:'i',metaKey:true});
+ const edge=await screen.findByRole('separator',{name:'Resize side panel'});
+ await waitFor(()=>expect(screen.getByTestId('inspector-slot').dataset.inspectorPhase).toBe('open'));
+ act(()=>{edge.dispatchEvent(new MouseEvent('pointerdown',{clientX:800,button:0,bubbles:true}));window.dispatchEvent(new MouseEvent('pointermove',{clientX:600}));});
+ expect(screen.getByTestId('inspector-slot').style.width).toBe('480px');expect(screen.getByTestId('inspector').style.width).toBe('100%');expect(screen.getByTestId('inspector-slot').style.transition).toBe('none');
+ act(()=>window.dispatchEvent(new MouseEvent('pointerup',{clientX:600})));
+ expect(window.localStorage.getItem('kelpi.inspector.width')).toBe('480');
+ cleanup();setup();
+ await waitFor(()=>expect(screen.getByTestId('inspector-slot').style.width).toBe('480px'));
+ const second=screen.getByRole('separator',{name:'Resize side panel'});
+ act(()=>{second.dispatchEvent(new MouseEvent('pointerdown',{clientX:600,button:0,bubbles:true}));window.dispatchEvent(new MouseEvent('pointermove',{clientX:900}));window.dispatchEvent(new MouseEvent('pointerup',{clientX:900}));});
+ expect(screen.getByTestId('inspector-slot').style.width).toBe('240px');expect(screen.getByTestId('inspector').style.maxWidth).toBe('100%');
+ });
+ });

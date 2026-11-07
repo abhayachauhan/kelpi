@@ -57,6 +57,9 @@ export function storeSidebarWidth(width: number, storage?: Storage | null | unde
 
 export interface SidebarResizerProps {
     readonly side?: 'left' | 'right';
+    readonly minimumWidth?: number;
+    readonly maximumWidth?: number;
+    readonly label?: string;
     /** The width at the moment a drag starts; every move is measured against this snapshot. */
     readonly width: number;
     readonly onResize: (width: number) => void;
@@ -89,6 +92,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
     const drag = useRef<{ startX: number; startWidth: number; latest: number; direction: 1 | -1 } | null>(null);
     /** The exact `removeEventListener` calls for the listeners that are actually installed. */
     const detach = useRef<(() => void) | null>(null);
+    const capture = useRef<{ element: HTMLElement; id: number } | null>(null);
     /*
      * The window handlers outlive the render that installed them, so they read props through a
      * ref rather than closing over them. Identity matters here beyond the usual staleness: a
@@ -103,7 +107,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
     const move = useCallback((event: PointerEvent): void => {
         const state = drag.current;
         if (state === null) return;
-        const next = clampSidebarWidth(state.startWidth + state.direction * (event.clientX - state.startX));
+        const next = Math.round(Math.min(latest.current.maximumWidth ?? SIDEBAR_MAX_WIDTH, Math.max(latest.current.minimumWidth ?? SIDEBAR_MIN_WIDTH, state.startWidth + state.direction * (event.clientX - state.startX))));
         state.latest = next;
         latest.current.onResize(next);
     }, []);
@@ -113,6 +117,8 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
         drag.current = null;
         detach.current?.();
         detach.current = null;
+        const held = capture.current; capture.current = null;
+        if (held) try { held.element.releasePointerCapture(held.id); } catch { /* Capture may already be released. */ }
         document.body.style.removeProperty('cursor');
         // Unconditional, and BEFORE the commit: this is the "nothing owns the width" signal,
         // and it has to be delivered even for a pointerdown that never moved.
@@ -144,20 +150,36 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
         <div
             data-testid="sidebar-resizer"
             role="separator"
+            tabIndex={0}
+            title={props.label ? "Drag left or right to resize the panel" : "Drag left or right to resize the sidebar"}
             aria-orientation="vertical"
-            aria-label="Resize sidebar"
+            aria-label={props.label ?? "Resize sidebar"}
             aria-valuenow={props.width}
-            aria-valuemin={SIDEBAR_MIN_WIDTH}
-            aria-valuemax={SIDEBAR_MAX_WIDTH}
+            aria-valuemin={props.minimumWidth ?? SIDEBAR_MIN_WIDTH}
+            aria-valuemax={props.maximumWidth ?? SIDEBAR_MAX_WIDTH}
             /* Zero-width in layout, 6 px of hit area straddling the edge — the shipped app's
                `contentShape(Rectangle().inset(by: -3))`, which is why the negative margin. */
             className="relative z-10 w-0 shrink-0 cursor-col-resize"
             style={{ order: props.side === 'right' ? -1 : undefined, marginLeft: -3, marginRight: -3, width: 6, background: 'transparent' }}
+            onKeyDown={(event) => {
+                const min = props.minimumWidth ?? SIDEBAR_MIN_WIDTH;
+                const max = props.maximumWidth ?? SIDEBAR_MAX_WIDTH;
+                const direction = props.side === 'right' ? -1 : 1;
+                const next = event.key === 'Home' ? min : event.key === 'End' ? max : event.key === 'ArrowLeft' ? props.width - direction * 24 : event.key === 'ArrowRight' ? props.width + direction * 24 : null;
+                if (next === null) return;
+                event.preventDefault(); event.stopPropagation();
+                const width = Math.min(max, Math.max(min, next));
+                props.onResize(width); props.onCommit?.(width);
+            }}
+            onLostPointerCapture={() => { if (drag.current !== null) end(); }}
             onPointerDown={(event) => {
                 // Secondary buttons only: `> 0` rather than `!== 0` so a synthesized event
                 // without a `button` field (jsdom, some remote-input paths) still drags.
                 if (event.button > 0) return;
                 event.preventDefault();
+                if (typeof event.currentTarget.setPointerCapture === 'function' && Number.isInteger(event.pointerId)) {
+                    try { event.currentTarget.setPointerCapture(event.pointerId); capture.current = { element: event.currentTarget, id: event.pointerId }; } catch { /* Window listeners still handle ordinary drags. */ }
+                }
                 drag.current = { startX: event.clientX, startWidth: props.width, latest: props.width, direction: props.side === 'right' ? -1 : 1 };
                 // Before any move: tell assembly a gesture owns the width now, so §WS-001's
                 // slide transition comes off the slot for the length of it.
@@ -189,6 +211,7 @@ export function SidebarResizer(props: SidebarResizerProps): ReactElement {
              * kept: everything else about the handle already matched.
              */
         >
+            {props.label ? <span aria-hidden="true" className="pointer-events-none absolute top-1/2 h-9 w-[3px] -translate-y-1/2 rounded" style={{ background: tokens.textTertiary, left: 2 }} /> : null}
             <div className="pointer-events-none h-full w-px" style={{ background: tokens.divider, marginLeft: 3 }} />
         </div>
     );

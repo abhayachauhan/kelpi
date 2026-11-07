@@ -1,3 +1,4 @@
+import { readStoredInspectorWidth, storeInspectorWidth, INSPECTOR_MIN_WIDTH, INSPECTOR_MAX_WIDTH } from './chrome/inspector-width';
 import { workspaceAgentDeleteWarning, type WorkspaceAgentSummary } from '@kelpi/core/agent';
 import { TerminalFeaturePane } from './features/TerminalFeaturePane';
 import { BrowserFeaturePane } from './features/BrowserFeaturePane';
@@ -137,7 +138,6 @@ import {
     ChromeIcon,
     ContextMenu,
     HelpOverlay,
-    INSPECTOR_WIDTH_PX,
     QuitGate,
     SidebarResizer,
     ThemeProvider,
@@ -506,6 +506,8 @@ function Shell(props: AppProps): ReactElement {
      */
     const [sidebarResizing, setSidebarResizing] = useState(false);
     /** §WS-137: the trailing inspector, opened from the top bar or `toggle_inspector`; arranged like the sidebar. */
+    const [inspectorWidth, setInspectorWidth] = useState(readStoredInspectorWidth);
+    const [inspectorResizing, setInspectorResizing] = useState(false);
     const inspectorVisible = arrangement.visible.inspector;
     const setInspectorVisible = useCallback(
         (next: SetStateAction<boolean>): void => arrange((current) => setBandVisible(current, 'inspector', next)),
@@ -787,10 +789,6 @@ function Shell(props: AppProps): ReactElement {
     // ~0.25s SwiftUI `.default` curve, the same "keep it mounted for the length of a close"
     // rule, differing only in which edge the panel travels off (`edge: 'trailing'`).
     //
-    // No resize opt-out is passed, and that is a property of the panel rather than an oversight:
-    // the inspector is a FIXED 280px (`INSPECTOR_WIDTH_PX`), so nothing writes the width the
-    // slot transitions and there is none of the chase §WS-002's drag had. The parameter exists
-    // on `sidebarSlideStyle` for the day it gains an edge handle.
 
     useEffect(() => {
         setInspectorPhase((phase) => sidebarPhaseFor(phase, inspectorVisible));
@@ -813,7 +811,7 @@ function Shell(props: AppProps): ReactElement {
     }, [inspectorPhase]);
 
     const inspectorMounted = isSidebarMounted(inspectorPhase);
-    const inspectorSlide = sidebarSlideStyle(inspectorPhase, INSPECTOR_WIDTH_PX, true, sidebarsSwapped ? 'leading' : 'trailing');
+    const inspectorSlide = sidebarSlideStyle(inspectorPhase, inspectorWidth, !inspectorResizing, sidebarsSwapped ? 'leading' : 'trailing');
 
     // ── connection lifecycle ────────────────────────────────────────────────────────
 
@@ -5245,6 +5243,19 @@ function Shell(props: AppProps): ReactElement {
                 <WorkbenchSidebar placement={inspectorPlacement} nativeViewID="kelpi.inspector" onManagePlugins={() => openSettings('plugins')} onClose={act.toggleInspector} />
                         </div>
                     </div>
+                    {inspectorPhase === 'closing' ? null : (
+                        <SidebarResizer
+                            side={sidebarsSwapped ? 'left' : 'right'}
+                            label="Resize side panel"
+                            width={inspectorWidth}
+                            minimumWidth={INSPECTOR_MIN_WIDTH}
+                            maximumWidth={INSPECTOR_MAX_WIDTH}
+                            onResizeStart={() => setInspectorResizing(true)}
+                            onResizeEnd={() => setInspectorResizing(false)}
+                            onResize={setInspectorWidth}
+                            onCommit={storeInspectorWidth}
+                        />
+                    )}
                 </div>
             ) : null}
 

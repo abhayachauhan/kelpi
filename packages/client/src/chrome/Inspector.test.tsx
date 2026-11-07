@@ -90,11 +90,13 @@ function view(props: Partial<InspectorProps> = {}) {
 }
 
 describe('layout and identity (§WS-137/§WS-138)', () => {
-    it('renders a fixed-width panel with the three sections and a close button', () => {
+    it('fills its panel host with the three sections and a close button', () => {
         const onClose = vi.fn();
         view({ onClose });
         const panel = screen.getByTestId('inspector');
-        expect(panel.style.width).toBe('280px');
+        expect(panel.style.width).toBe('100%');
+        expect(panel.style.minWidth).toBe('0');
+        expect(panel.style.maxWidth).toBe('100%');
         expect(screen.getByTestId('inspector-workspace')).toBeTruthy();
         expect(screen.getByTestId('inspector-repos')).toBeTruthy();
         expect(screen.getByTestId('inspector-panes')).toBeTruthy();
